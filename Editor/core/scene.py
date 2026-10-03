@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-"""场景数据层（V3：Unity 式 GameObject + 组件体系）。
+"""场景数据层（V3.5：Unity 式 GameObject + 组件体系）。
 
 - Component：组件基类（挂到物体上，默认每个物体挂一个 Transform）
 - Transform：位置 / 旋转（度，绕 X/Y/Z）/ 缩放（物体的第一个组件，不可移除）
-- MeshRenderer：网格渲染组件（mesh: "cube"/"sphere"/None + 颜色）
+- MeshRenderer：网格渲染组件（mesh 键 + 材质键，颜色由材质决定）
+- Material：颜色等外观由材质资源（.vmat）配置，MeshRenderer 只引用
+- Light：光照组件（方向光 / 点光源）
+- Camera：摄像机组件（fov / near / far）
 - GameObject：名称 + uuid + 激活 + 组件列表 + 父子层级
 - Scene：全部物体（扁平列表，父子靠 parent 引用）+ 增删/设父/取世界变换
 
@@ -40,20 +43,24 @@ class Transform(Component):
 
 
 class MeshRenderer(Component):
-    """网格渲染组件：决定物体画什么与基色。
+    """网格渲染组件：决定物体画什么几何，颜色来自材质资源。
 
     mesh 取值：
     - "cube" / "sphere"：引擎内置 .obj 模型
     - 资源路径（相对项目 Resources，如 "Models/rock.obj"）：导入的自定义模型
     - None：空物体
+    material 取值：
+    - "default"：引擎内置默认材质（Editor/assets/materials/default.vmat）
+    - 资源路径（相对项目 Resources，如 "Materials/red.vmat"）
+    - None：无材质（渲染中性灰）
     """
 
     TYPE = "MeshRenderer"
 
-    def __init__(self, mesh=None, color=(0.30, 0.55, 0.85)):
+    def __init__(self, mesh=None, material="default"):
         super().__init__()
         self.mesh = mesh            # "cube" / "sphere" / 资源路径 / None
-        self.color = list(color)    # RGB 0~1
+        self.material = material    # 材质资源键（"default" / 相对路径 / None）
 
 
 class Light(Component):
@@ -66,6 +73,18 @@ class Light(Component):
         self.lightType = lightType          # "directional" / "point"
         self.color = list(color)            # RGB 0~1
         self.intensity = float(intensity)   # 倍率
+
+
+class Camera(Component):
+    """摄像机组件：视锥参数（编辑器视口仍用轨道相机，组件供运行时/导出用）。"""
+
+    TYPE = "Camera"
+
+    def __init__(self, fov=60.0, near=0.1, far=1000.0):
+        super().__init__()
+        self.fov = float(fov)       # 垂直视场角（度）
+        self.near = float(near)     # 近裁剪面
+        self.far = float(far)       # 远裁剪面
 
 
 # ---- 物体 ----
@@ -160,9 +179,12 @@ class Scene:
             self.removeObject(child)
 
     def setParent(self, child, parent):
-        """把 child 设为 parent 的子物体；parent 传 None 表示脱离父级。"""
-        if parent is not None and child.isDescendantOf(parent):
-            return child      # 防止把自己设进自己子树（成环）
+        """把 child 设为 parent 的子物体；parent 传 None 表示脱离父级。
+
+        拒绝两种情况：parent 就是 child 自己；parent 位于 child 的子树中
+        （把祖先拖进自己的后代会造成父子环）。"""
+        if parent is not None and (parent is child or parent.isDescendantOf(child)):
+            return child      # 拒绝成环：parent 是 child 的后代/自身
         if child.parent is not None and child in child.parent.children:
             child.parent.children.remove(child)
         child.parent = parent
@@ -220,10 +242,10 @@ def worldMatrix(go):
 
 # ---- 演示场景 ----
 def createDemoScene():
-    """生成演示场景：一个立方体 + 一个方向光。"""
+    """生成演示场景：一个立方体（默认材质）+ 一个方向光。"""
     scene = Scene()
     cube = GameObject(name="立方体")
-    cube.addComponent(MeshRenderer(mesh="cube", color=(0.35, 0.55, 0.85)))
+    cube.addComponent(MeshRenderer(mesh="cube", material="default"))
     cube.transform.position = np.array([0.0, 1.0, 0.0])
     scene.addObject(cube)
     sun = GameObject(name="方向光")

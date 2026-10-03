@@ -60,6 +60,7 @@ except Exception:
     pass
 
 from .orbitCamera import OrbitCamera
+from ..core.materialCache import loadMaterial
 from ..core.scene import Light, MeshRenderer, worldMatrix
 from ..core.meshCache import getMesh
 
@@ -76,6 +77,10 @@ CLICK_TOL = 5.0   # 位移小于该像素视为「点击」（拾取），否则
 
 # Gizmo 旋转：每帧最大角增量（度）。@60FPS 下约 480°/s，跟手且不跳变。
 ROTATE_MAX_DEG_PER_FRAME = 8.0
+
+# 缩放灵敏度：factor = 1 + proj / (size × SCALE_SENSITIVITY)。
+# 拖动一个轴长屏幕距离只放大 1/SCALE_SENSITIVITY 倍（精细控制，不再“一拖就大”）。
+SCALE_SENSITIVITY = 1.6
 
 # 默认按键绑定（动作 → 键名）
 DEFAULT_KEYS = {
@@ -322,10 +327,11 @@ class GLViewport(tk.Frame):
 
         - 方向光：方向取灯光物体世界旋转的 -Z（朝向光照射方向），位置 w=0
         - 点光源：世界位置 + 衰减，位置 w=1
-        最多启用 4 盏（超出忽略）；环境光常量淡蓝灰。
+        最多启用 4 盏（超出忽略）。
+        无任何灯时环境光 = 0 → 场景物体全部绘制为纯黑 0,0,0
+        （网格/坐标轴/Gizmo 已在各自绘制处关闭光照，不受影响）。
         """
         glEnable(GL_LIGHTING)
-        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.18, 0.18, 0.22, 1.0])
         lights = []
         for obj in (self.scene.objects if self.scene else []):
             if not obj.active:
@@ -339,6 +345,11 @@ class GLViewport(tk.Frame):
             fwd = -(m[:3, :3] @ np.array([0.0, 0.0, 1.0]))
             color = np.array(lt.color, dtype=float) * lt.intensity
             lights.append((lt.lightType, pos, fwd, color))
+        # 有灯时给一点环境光让暗部可见；无灯时 0 → 全黑
+        if lights:
+            glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.18, 0.18, 0.22, 1.0])
+        else:
+            glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.0, 0.0, 0.0, 1.0])
         for i, (ltype, pos, fwd, color) in enumerate(lights[:4]):
             lightId = GL_LIGHT0 + i
             glEnable(lightId)
@@ -369,6 +380,7 @@ class GLViewport(tk.Frame):
             data = getMesh(mr.mesh, self.projectRoot)
             if data is None:
                 continue
+            color = loadMaterial(mr.material, self.projectRoot)   # 颜色由材质资源配置
             glPushMatrix()
             glMultMatrixf(worldMatrix(obj).T.flatten())   # 列优先传给 GL（含父子链）
             glEnableClientState(GL_VERTEX_ARRAY)
@@ -376,7 +388,7 @@ class GLViewport(tk.Frame):
             glVertexPointer(3, GL_FLOAT, 0, data.vertices)
             glNormalPointer(GL_FLOAT, 0, data.normals)
             glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE,
-                         [mr.color[0], mr.color[1], mr.color[2], 1.0])
+                         [color[0], color[1], color[2], 1.0])
             glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [0.35, 0.35, 0.35, 1.0])
             glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 32.0)
             glDrawElements(GL_TRIANGLES, len(data.indices), GL_UNSIGNED_INT, data.indices)
@@ -458,7 +470,7 @@ class GLViewport(tk.Frame):
             glBegin(GL_LINES)
             glVertex3f(*origin); glVertex3f(*(origin + d * size))
             glEnd()
-            self._drawCubeHandle(origin + d * size, size * 0.14, color)
+            self._drawCubeHandle(origin + d * size, size * 0.09, color)
 
     def _drawRotateGizmo(self, origin, size):
         """旋转模式：XY / XZ / YZ 三色圆环（按轴向）。"""
@@ -678,10 +690,23 @@ class GLViewport(tk.Frame):
             if k == "r":
                 self.setGizmoMode("scale")
                 return
+            if k == "f":
+                self.focusSelected()   # F：聚焦选中物体
+                return
         for action, key in self.keyBinds.items():
             if event.keysym.lower() == key.lower():
                 self._chars.add(action)
                 break
+
+    def focusSelected(self):
+        """F 键：把相机注视点移到选中物体（保持当前距离与视角）。"""
+        if self.selected is None:
+            return
+        origin = self._gizmoOrigin()
+        if origin is None:
+            return
+        self.camera.target = origin.copy()
+        self.renderFrame()
 
     def _onKeyRelease(self, event):
         for action, key in self.keyBinds.items():
@@ -701,9 +726,14 @@ class GLViewport(tk.Frame):
                 self._gizmoDrag = axis
                 self._gizmoStart = np.asarray(self._gizmoOrigin(), dtype=float).copy()
                 self._gizmoStartScale = np.asarray(self.selected.transform.scale, dtype=float).copy()
-                # move/scale 记录起始屏幕点（按绝对位移换算，跟手）；
-                # rotate 首帧由 _dragRotate 初始化参考平面点
-                self._gizmoStartT = None if self.gizmoMode == "rotate" else (event.x, event.y)
+                if self.gizmoMode == "rotate":
+                    self._gizmoStartT = None   # rotate 首帧由 _dragRotate 初始化参考平面点
+                else:
+                    # move/scale：按下时缓存轴在屏幕上的方向（单位向量）。
+                    # 拖动全程用固定方向 → 物体远离/靠近相机导致轴投影翻转时
+                    # 不会突跳回原位（方向翻转正是“拖远后跳回”的根因）。
+                    ax, ay, _pl = self._axisScreenDir(axis)
+                    self._gizmoStartT = (event.x, event.y, ax, ay)
                 self._moved = True   # 视为拖拽，不触发拾取
 
     def _onDragLeft(self, event):
@@ -797,13 +827,16 @@ class GLViewport(tk.Frame):
         tr.position = self._gizmoStart + self._axisVec(axis) * proj
 
     def _dragScale(self, x, y, axis):
-        """缩放：鼠标位移投影到轴 → 起始缩放 × 因子（非等比，每轴独立）。"""
+        """缩放：鼠标位移投影到轴 → 起始缩放 × 因子（非等比，每轴独立）。
+
+        灵敏度：拖动一个轴长屏幕距离只放大 1/SCALE_SENSITIVITY 倍，
+        配合固定轴方向 → 精细、跟手、不跳变。"""
         origin = self._gizmoOrigin()
         if origin is None:
             return
         size = self._gizmoSize(origin)
         proj = self._screenAxisProj(x, y, origin, axis)
-        factor = 1.0 + proj / max(size, 1e-6)
+        factor = 1.0 + proj / max(size * SCALE_SENSITIVITY, 1e-6)
         tr = self.selected.transform
         sc = self._gizmoStartScale.copy()
         idx = {"x": 0, "y": 1, "z": 2}[axis]
@@ -813,21 +846,40 @@ class GLViewport(tk.Frame):
     def _screenAxisProj(self, x, y, origin, axis):
         """鼠标从起始屏幕点的位移 → 沿该轴的世界位移量（跟手核心）。
 
-        比例用「当前」物体位置换算（轴上 size 世界单位 = 多少屏幕像素），
-        方向 = 轴在屏幕上的方向；鼠标位移在轴方向上的投影 ÷ 比例 = 世界位移。
-        起始点是按下时的屏幕坐标，全程绝对量 → 无累积误差、方向始终与视觉一致。"""
-        sx, sy = self._gizmoStartT if isinstance(self._gizmoStartT, tuple) else (x, y)
+        方向 = 按下时缓存的轴屏幕方向（全程固定，杜绝投影翻转导致回跳）；
+        比例用「当前」物体位置实时换算（轴上 size 世界单位 = 多少屏幕像素），
+        物体移动后比例自适应，速度保持跟手。位移 = 像素投影 ÷ 比例。"""
+        t = self._gizmoStartT
+        if not isinstance(t, tuple) or len(t) != 4:
+            return 0.0
+        sx, sy, ax, ay = t
         size = self._gizmoSize(origin)
         p0 = self._project(origin)
         p1 = self._project(origin + self._axisVec(axis) * size)
         if p0 is None or p1 is None:
             return 0.0
-        ax, ay = p1[0] - p0[0], p1[1] - p0[1]
-        length = math.hypot(ax, ay)
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        length = math.hypot(dx, dy)
         if length < 1e-6:
             return 0.0
-        projPx = ((x - sx) * ax + (y - sy) * ay) / length   # 像素位移沿轴投影
-        return projPx * (size / length)                     # 像素 → 世界单位
+        projPx = (x - sx) * ax + (y - sy) * ay            # 沿固定轴方向的像素投影
+        return projPx * (size / length)                   # 像素 → 世界单位
+
+    def _axisScreenDir(self, axis):
+        """轴在屏幕上的方向（单位向量）与 像素/世界 比例，按下时缓存用。"""
+        origin = self._gizmoOrigin()
+        if origin is None:
+            return 0.0, 0.0, 1.0
+        size = self._gizmoSize(origin)
+        p0 = self._project(origin)
+        p1 = self._project(origin + self._axisVec(axis) * size)
+        if p0 is None or p1 is None:
+            return 0.0, 0.0, 1.0
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            return 0.0, 0.0, 1.0
+        return dx / length, dy / length, size / length
 
     def _dragRotate(self, x, y, axis):
         """旋转：射线与过原点、法线为轴的平面求交，逐帧增量角度 → 绕轴旋转。

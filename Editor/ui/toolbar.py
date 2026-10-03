@@ -17,6 +17,7 @@ CREATE_ITEMS = [
     ("空物体", "empty"),
     ("立方体", "cube"),
     ("球体", "sphere"),
+    ("摄像机", "camera"),
     ("方向光", "directional"),
     ("点光源", "point"),
 ]

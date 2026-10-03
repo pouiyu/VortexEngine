@@ -10,9 +10,9 @@ import uuid
 
 import numpy as np
 
-from .scene import GameObject, Light, MeshRenderer, Scene, Transform
+from .scene import Camera, GameObject, Light, MeshRenderer, Scene, Transform
 
-SCHEMA = 3
+SCHEMA = 4
 
 
 def _listOrNone(v):
@@ -23,23 +23,35 @@ def _listOrNone(v):
         return None
 
 
+def _numList(v):
+    """把 numpy 数组/列表转成纯 Python float 列表（JSON 可序列化）。"""
+    return [float(x) for x in v]
+
+
 def serializeComponent(comp):
     """组件 → 可 JSON 化的字典。"""
     if isinstance(comp, Transform):
         return {
             "type": "Transform",
-            "position": list(comp.position),
-            "rotation": list(comp.rotation),
-            "scale": list(comp.scale),
+            "position": _numList(comp.position),
+            "rotation": _numList(comp.rotation),
+            "scale": _numList(comp.scale),
         }
     if isinstance(comp, MeshRenderer):
-        return {"type": "MeshRenderer", "mesh": comp.mesh, "color": list(comp.color)}
+        return {"type": "MeshRenderer", "mesh": comp.mesh, "material": comp.material}
     if isinstance(comp, Light):
         return {
             "type": "Light",
             "lightType": comp.lightType,
-            "color": list(comp.color),
-            "intensity": comp.intensity,
+            "color": _numList(comp.color),
+            "intensity": float(comp.intensity),
+        }
+    if isinstance(comp, Camera):
+        return {
+            "type": "Camera",
+            "fov": float(comp.fov),
+            "near": float(comp.near),
+            "far": float(comp.far),
         }
     return {"type": "Unknown"}
 
@@ -57,13 +69,17 @@ def deserializeComponent(data):
             t.scale = np.asarray(v, dtype=float)
         return t
     if ctype == "MeshRenderer":
-        color = _listOrNone(data.get("color"))
-        return MeshRenderer(mesh=data.get("mesh"), color=color or [0.30, 0.55, 0.85])
+        # V3.5：颜色已从组件移除，改由材质资源配置；旧数据 color 忽略
+        return MeshRenderer(mesh=data.get("mesh"), material=data.get("material"))
     if ctype == "Light":
         color = _listOrNone(data.get("color"))
         return Light(lightType=data.get("lightType") or "directional",
                      color=color or [1.0, 1.0, 1.0],
                      intensity=data.get("intensity", 1.0))
+    if ctype == "Camera":
+        return Camera(fov=data.get("fov", 60.0),
+                      near=data.get("near", 0.1),
+                      far=data.get("far", 1000.0))
     return None
 
 
@@ -117,15 +133,15 @@ def deserializeScene(data):
 
 
 def saveSceneFile(scene, path):
-    """保存场景到 JSON 文件（自动补 .json 后缀）。"""
-    p = path if str(path).endswith(".json") else f"{path}.json"
+    """保存场景到 JSON 文件（.vscene 自定义场景格式，内容为 JSON）。"""
+    p = path if str(path).endswith((".json", ".vscene")) else f"{path}.vscene"
     with open(p, "w", encoding="utf-8") as f:
         json.dump(serializeScene(scene), f, ensure_ascii=False, indent=2)
     return p
 
 
 def loadSceneFile(path):
-    """从 JSON 文件加载场景；文件缺失或损坏返回空场景。"""
+    """从场景文件（.vscene/.json）加载场景；文件缺失或损坏返回空场景。"""
     try:
         with open(path, "r", encoding="utf-8") as f:
             return deserializeScene(json.load(f))

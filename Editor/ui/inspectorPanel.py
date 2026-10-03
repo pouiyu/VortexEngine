@@ -1,29 +1,33 @@
 # -*- coding: utf-8 -*-
-"""检查器面板：编辑选中物体的名称 / 激活 / 变换 / 组件（V3）。
+"""检查器面板：编辑选中物体 / 材质的属性（V4）。
 
-- 名称 / 激活 / 组件增删：结构变化 → 刷新层级与视口（onStructure）
-- 变换三组数值框：KeyRelease 实时提交（onValue 仅重绘，不重建控件）
-- 滚轮增减数值：步长 1，Ctrl=0.1，Shift=10（09-13 已确认的交互）
-- 组件区：网格渲染器（网格下拉 + RGB 颜色 + 预览色块）；Transform 为默认组件不可删
+物体模式：
+- 名称 / 激活 / 父级下拉 / 组件增删（onStructure）
+- 变换三组数值框（KeyRelease 实时提交；Gizmo 拖动时 refreshTransformValues 轻量刷新）
+- 组件区：变换 / 网格渲染器（材质选择用项目资源选择器）/ 光照 / 摄像机
+材质模式（资源浏览器选中 .vmat）：编辑颜色并保存到材质文件（onSaveMaterial）
 """
 
 import tkinter as tk
 from tkinter import ttk
 
+from ..core.materialCache import listProjectMaterials, loadMaterial, saveMaterial
 from ..core.meshCache import listProjectMeshes
-from ..core.scene import Light, MeshRenderer, Transform
+from ..core.scene import Camera, Light, MeshRenderer, Transform
+from .resourcePicker import ResourcePicker
 
 
 class InspectorPanel(ttk.Frame):
-    """显示并编辑选中物体的属性。"""
+    """显示并编辑选中物体或材质的属性。"""
 
     def __init__(self, master, scene=None, onValue=None, onStructure=None,
-                 projectRoot=None, **kw):
+                 projectRoot=None, onSaveMaterial=None, **kw):
         super().__init__(master, **kw)
         self.scene = scene
         self.onValue = onValue          # 数值变化：仅重绘视口
         self.onStructure = onStructure  # 结构变化：刷新层级 + 重绘视口
-        self.projectRoot = projectRoot  # 项目根（网格下拉列出 Resources 下 .obj）
+        self.projectRoot = projectRoot  # 项目根
+        self.onSaveMaterial = onSaveMaterial  # 材质保存回调（main 负责刷新渲染）
         self.selected = None
 
         ttk.Label(self, text="检查器", padding=(6, 3)).pack(fill=tk.X)
@@ -44,6 +48,73 @@ class InspectorPanel(ttk.Frame):
         self._buildHeader(obj)
         self._buildComponents(obj)
 
+    def showMaterial(self, material):
+        """材质编辑模式：显示材质名 + 颜色，保存写回 .vmat 文件。"""
+        self.selected = None
+        for child in self.proxy.winfo_children():
+            child.destroy()
+        if not material:
+            self._buildMessage("请选择材质")
+            return
+        sec = ttk.LabelFrame(self.proxy, text="材质", padding=6)
+        sec.pack(fill=tk.X, padx=6, pady=4)
+        nameRow = ttk.Frame(sec)
+        nameRow.pack(fill=tk.X, pady=2)
+        ttk.Label(nameRow, text="材质").pack(side=tk.LEFT)
+        ttk.Label(nameRow, text=material, width=24).pack(side=tk.LEFT, padx=(4, 0))
+        color = loadMaterial(material, self.projectRoot)
+        self._materialColor = list(color)
+
+        colorRow = ttk.Frame(sec)
+        colorRow.pack(fill=tk.X, pady=2)
+        ttk.Label(colorRow, text="颜色").pack(side=tk.LEFT)
+        swatch = tk.Label(colorRow, width=3, relief=tk.SUNKEN, bg=self._hex(color))
+        swatch.pack(side=tk.LEFT, padx=(4, 2))
+        self._matSwatch = swatch
+        for i, label in enumerate(("R", "G", "B")):
+            e = ttk.Entry(colorRow, width=4)
+            e.insert(0, str(int(round(color[i] * 255))))
+            e.pack(side=tk.LEFT, padx=1)
+            e.bind("<KeyRelease>", lambda _ev, ee=e, idx=i: self._commitMatColor(ee, idx))
+            e.bind("<MouseWheel>", lambda ev, ee=e, idx=i: self._onMatColorWheel(ev, ee, idx))
+
+        saveRow = ttk.Frame(sec)
+        saveRow.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(saveRow, text="保存材质",
+                   command=lambda: self._saveMaterialFile(material)).pack(side=tk.LEFT)
+        ttk.Label(saveRow, text="（保存后所有引用该材质的物体即时更新）",
+                  foreground="#888").pack(side=tk.LEFT, padx=8)
+
+    def _commitMatColor(self, entry, idx):
+        try:
+            v = max(0, min(255, int(float(entry.get()))))
+        except ValueError:
+            return
+        self._materialColor[idx] = v / 255.0
+        self._matSwatch.config(bg=self._hex(self._materialColor))
+
+    def _onMatColorWheel(self, event, entry, idx):
+        step = 10 if (event.state & 0x0001) else 1
+        try:
+            cur = int(float(entry.get()))
+        except ValueError:
+            return "break"
+        cur += step if event.delta > 0 else -step
+        entry.delete(0, tk.END)
+        entry.insert(0, str(max(0, min(255, cur))))
+        self._commitMatColor(entry, idx)
+        return "break"
+
+    def _saveMaterialFile(self, material):
+        try:
+            saveMaterial(material, self.projectRoot, self._materialColor)
+        except OSError as e:
+            self._buildMessage(f"保存失败：{e}")
+            return
+        if self.onSaveMaterial:
+            self.onSaveMaterial()
+
+    # ---- 物体模式 ----
     def _buildHeader(self, obj):
         """名称（可编辑）+ 激活（复选框）+ 父级（下拉可选，禁止选自己/子孙）。"""
         row = ttk.Frame(self.proxy)
@@ -101,7 +172,7 @@ class InspectorPanel(ttk.Frame):
 
     # ---- 组件区：一个组件一个框 ----
     def _buildComponents(self, obj):
-        """按组件逐个画独立 LabelFrame 框（Transform / 网格渲染器 / 光照），底部是添加按钮。"""
+        """按组件逐个画独立 LabelFrame 框（变换 / 网格渲染器 / 光照 / 摄像机），底部是添加按钮。"""
         for comp in obj.components:
             if isinstance(comp, Transform):
                 self._buildTransformBox(obj)
@@ -109,15 +180,17 @@ class InspectorPanel(ttk.Frame):
                 self._buildMeshBox(obj, comp)
             elif isinstance(comp, Light):
                 self._buildLightBox(obj, comp)
+            elif isinstance(comp, Camera):
+                self._buildCameraBox(obj, comp)
         addRow = ttk.Frame(self.proxy)
         addRow.pack(fill=tk.X, padx=6, pady=4)
         ttk.Button(addRow, text="+ 添加组件",
                    command=lambda: self._menuAddComponent(addRow, obj)).pack(side=tk.LEFT)
 
     def _buildTransformBox(self, obj):
-        """Transform 组件框：位置 / 旋转 / 缩放三组数值框（实时提交 + 滚轮步进）。"""
+        """变换组件框：位置 / 旋转 / 缩放三组数值框（实时提交 + 滚轮步进）。"""
         t = obj.transform
-        sec = ttk.LabelFrame(self.proxy, text="Transform", padding=6)
+        sec = ttk.LabelFrame(self.proxy, text="变换", padding=6)
         sec.pack(fill=tk.X, padx=6, pady=4)
         self._tfEntries = {}
         for label, attr in (("位置", "position"), ("旋转", "rotation"), ("缩放", "scale")):
@@ -175,7 +248,7 @@ class InspectorPanel(ttk.Frame):
         return "break"
 
     def _buildMeshBox(self, obj, mr):
-        """网格渲染器组件框：右上角「移除」+ 网格下拉 + RGB 颜色（0~255，实时预览）。"""
+        """网格渲染器组件框：移除 + 网格下拉 + 材质（项目资源选择器）。"""
         sec = ttk.LabelFrame(self.proxy, text="网格渲染器", padding=6)
         sec.pack(fill=tk.X, padx=6, pady=4)
         head = ttk.Frame(sec)
@@ -197,19 +270,51 @@ class InspectorPanel(ttk.Frame):
 
         combo.bind("<<ComboboxSelected>>", _setMesh)
 
-        colorRow = ttk.Frame(sec)
-        colorRow.pack(fill=tk.X, padx=(12, 0), pady=1)
-        ttk.Label(colorRow, text="颜色").pack(side=tk.LEFT)
-        swatch = tk.Label(colorRow, width=3, relief=tk.SUNKEN, bg=self._hex(mr.color))
-        swatch.pack(side=tk.LEFT, padx=(4, 2))
-        for i, label in enumerate(("R", "G", "B")):
-            e = ttk.Entry(colorRow, width=4)
-            e.insert(0, str(int(round(mr.color[i] * 255))))
-            e.pack(side=tk.LEFT, padx=1)
-            e.bind("<KeyRelease>",
-                   lambda _ev, ee=e, idx=i: self._commitColor(mr, ee, swatch, idx))
-            e.bind("<MouseWheel>",
-                   lambda ev, ee=e, idx=i: self._onColorWheel(ev, ee, mr, swatch, idx))
+        matRow = ttk.Frame(sec)
+        matRow.pack(fill=tk.X, padx=(12, 0), pady=1)
+        ttk.Label(matRow, text="材质").pack(side=tk.LEFT)
+        ttk.Label(matRow, text=mr.material or "（无）", width=20,
+                  foreground="#333").pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(matRow, text="选择…",
+                   command=lambda: self._pickMaterial(obj, mr)).pack(side=tk.LEFT, padx=(6, 0))
+
+    def _pickMaterial(self, obj, mr):
+        """打开项目资源选择器选 .vmat（含内置 default 与「无」）。"""
+        picker = ResourcePicker(self.winfo_toplevel(), self.projectRoot,
+                                title="选择材质",
+                                extensions={".vmat"},
+                                prompt="选择材质（双击或点确定）：")
+        picker.wait_window()
+
+        def _apply(rel):
+            mr.material = rel
+            if self.onValue:
+                self.onValue()
+
+        if picker.result:
+            _apply(picker.result)
+        else:
+            self._materialChoices(obj, mr)
+
+    def _materialChoices(self, obj, mr):
+        """材质候选菜单：内置 default / 项目材质 / 无。"""
+        menu = tk.Menu(self, tearoff=0)
+        options = ["default"] + listProjectMaterials(self.projectRoot)
+
+        def _set(m):
+            mr.material = m
+            if self.onValue:
+                self.onValue()
+
+        menu.add_command(label="default（内置）",
+                         command=lambda: _set("default"))
+        for opt in options:
+            menu.add_command(label=opt, command=lambda o=opt: _set(o))
+        menu.add_command(label="（无材质）", command=lambda: _set(None))
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
 
     def _meshOptions(self):
         """网格下拉候选：内置 cube/sphere + 项目 Resources 下所有 .obj。"""
@@ -278,23 +383,66 @@ class InspectorPanel(ttk.Frame):
 
         eInt.bind("<KeyRelease>", _commitIntensity)
 
+    def _buildCameraBox(self, obj, cam):
+        """摄像机组件框：fov / near / far。"""
+        sec = ttk.LabelFrame(self.proxy, text="摄像机", padding=6)
+        sec.pack(fill=tk.X, padx=6, pady=4)
+        head = ttk.Frame(sec)
+        head.pack(fill=tk.X)
+        ttk.Button(head, text="移除", width=4,
+                   command=lambda: self._removeComponent(obj, cam)).pack(side=tk.RIGHT)
+
+        for label, attr, width in (("视场角", "fov", 6), ("近裁剪", "near", 6), ("远裁剪", "far", 6)):
+            row = ttk.Frame(sec)
+            row.pack(fill=tk.X, padx=(12, 0), pady=1)
+            ttk.Label(row, text=label).pack(side=tk.LEFT)
+            e = ttk.Entry(row, width=width)
+            e.insert(0, f"{getattr(cam, attr):g}")
+            e.pack(side=tk.LEFT, padx=(4, 0))
+
+            def _commit(_ev=None, ee=e, c=cam, a=attr):
+                try:
+                    setattr(c, a, float(ee.get()))
+                except ValueError:
+                    return
+                if self.onValue:
+                    self.onValue()
+
+            e.bind("<KeyRelease>", _commit)
+            e.bind("<MouseWheel>", lambda ev, ee=e, c=cam, a=attr:
+                   self._onCameraWheel(ev, ee, c, a))
+
+    def _onCameraWheel(self, event, entry, cam, attr):
+        step = 1.0 if (event.state & 0x0001) else 0.1
+        try:
+            cur = float(entry.get())
+        except ValueError:
+            return "break"
+        cur += step if event.delta > 0 else -step
+        entry.delete(0, tk.END)
+        entry.insert(0, f"{cur:g}")
+        setattr(cam, attr, cur)
+        if self.onValue:
+            self.onValue()
+        return "break"
+
     @staticmethod
     def _hex(color):
         r = [max(0, min(255, int(round(c * 255)))) for c in color]
         return f"#{r[0]:02x}{r[1]:02x}{r[2]:02x}"
 
-    def _commitColor(self, mr, entry, swatch, idx):
+    def _commitColor(self, lt, entry, swatch, idx):
         """写回颜色分量并刷新预览（仅重绘）。"""
         try:
             v = max(0, min(255, int(float(entry.get()))))
         except ValueError:
             return
-        mr.color[idx] = v / 255.0
-        swatch.config(bg=self._hex(mr.color))
+        lt.color[idx] = v / 255.0
+        swatch.config(bg=self._hex(lt.color))
         if self.onValue:
             self.onValue()
 
-    def _onColorWheel(self, event, entry, mr, swatch, idx):
+    def _onColorWheel(self, event, entry, lt, swatch, idx):
         step = 10 if (event.state & 0x0001) else 1
         try:
             cur = int(float(entry.get()))
@@ -303,17 +451,17 @@ class InspectorPanel(ttk.Frame):
         cur += step if event.delta > 0 else -step
         entry.delete(0, tk.END)
         entry.insert(0, str(max(0, min(255, cur))))
-        self._commitColor(mr, entry, swatch, idx)
+        self._commitColor(lt, entry, swatch, idx)
         return "break"
 
     def _menuAddComponent(self, anchor, obj):
-        """「+ 添加组件」下拉：网格渲染器 / 光照（已有则禁用）。"""
+        """「+ 添加组件」下拉：网格渲染器 / 光照 / 摄像机（已有则禁用）。"""
         menu = tk.Menu(self, tearoff=0)
         if obj.getComponent(MeshRenderer) is None:
             menu.add_command(
                 label="网格渲染器",
                 command=lambda: self._addComponent(
-                    obj, MeshRenderer(mesh="cube", color=[0.30, 0.55, 0.85])))
+                    obj, MeshRenderer(mesh="cube", material="default")))
         else:
             menu.add_command(label="网格渲染器（已有）", state=tk.DISABLED)
         if obj.getComponent(Light) is None:
@@ -327,6 +475,12 @@ class InspectorPanel(ttk.Frame):
                     obj, Light(lightType="point", color=[1.0, 0.9, 0.7], intensity=1.2)))
         else:
             menu.add_command(label="光照（已有）", state=tk.DISABLED)
+        if obj.getComponent(Camera) is None:
+            menu.add_command(
+                label="摄像机",
+                command=lambda: self._addComponent(obj, Camera()))
+        else:
+            menu.add_command(label="摄像机（已有）", state=tk.DISABLED)
         menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height())
 
     def _addComponent(self, obj, comp):

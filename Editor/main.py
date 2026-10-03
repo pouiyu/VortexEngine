@@ -26,7 +26,7 @@ if __package__ in (None, ""):
     __package__ = "Editor"
 
 from .core.preferences import loadPreferences, savePreferences
-from .core.scene import GameObject, Light, MeshRenderer, createDemoScene, worldMatrix
+from .core.scene import Camera, GameObject, Light, MeshRenderer, createDemoScene, worldMatrix
 from .core.serializer import loadSceneFile, saveSceneFile
 from .core.meshCache import importModel as importModelFile
 from .renderer.glViewport import GLViewport
@@ -46,10 +46,17 @@ def isVortexProject(path):
     return (Path(path) / "Engine" / "engineData.ved").is_file()
 
 
-def _goWith(mesh, color, name=None):
-    """带网格渲染器的物体（创建列表辅助）。"""
+def _goWith(mesh, material="default", name=None):
+    """带网格渲染器的物体（创建列表辅助，颜色由材质配置）。"""
     go = GameObject(name=name or ("立方体" if mesh == "cube" else "球体"))
-    go.addComponent(MeshRenderer(mesh=mesh, color=color))
+    go.addComponent(MeshRenderer(mesh=mesh, material=material))
+    return go
+
+
+def _goCamera(name="摄像机"):
+    """带摄像机组件的物体（创建列表辅助）。"""
+    go = GameObject(name=name)
+    go.addComponent(Camera())
     return go
 
 
@@ -82,11 +89,16 @@ class EditorApp:
         self.projectName = readProjectName(self.projectRoot) if self.projectRoot else "（未命名项目）"
         # 打开项目时自动加载项目根 scene.json；没有则用演示场景
         if self.projectRoot:
-            self.scene = loadSceneFile(self.projectRoot / "scene.json")
-            if not self.scene.objects:
+            defaultScene = self.projectRoot / "scene.json"
+            if defaultScene.exists():
+                self.scene = loadSceneFile(defaultScene)
+                self.scenePath = defaultScene
+            else:
                 self.scene = createDemoScene()
+                self.scenePath = None
         else:
             self.scene = createDemoScene()
+            self.scenePath = None
         self.prefs = loadPreferences()
         self.selected = None            # 当前选中物体（结构刷新后恢复高亮用）
 
@@ -170,13 +182,16 @@ class EditorApp:
         left = ttk.Panedwindow(body, orient=tk.VERTICAL)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(4, 0), pady=2)
 
-        self.hierarchy = HierarchyPanel(left, scene=self.scene, onSelect=self._onSelect)
+        self.hierarchy = HierarchyPanel(left, scene=self.scene, onSelect=self._onSelect,
+                                         onStructure=self._onStructure)
         left.add(self.hierarchy, weight=2)
 
         self.project = ProjectPanel(left, projectRoot=self.projectRoot,
-                                    onStatus=self.status.showMessage if hasattr(self, "status") else None,
+                                    onOpenScene=self.openSceneFile,
+                                    onUseMesh=self._onUseMesh,
+                                    onEditMaterial=self._onEditMaterial,
                                     onImport=self._onModelImported,
-                                    onUseMesh=self._onUseMesh)
+                                    onStatus=self.status.showMessage if hasattr(self, "status") else None)
         left.add(self.project, weight=1)
 
         self.viewport = GLViewport(body, scene=self.scene, onSelect=self._onSelect,
@@ -188,7 +203,8 @@ class EditorApp:
         self.inspector = InspectorPanel(body, scene=self.scene,
                                         onValue=self._onValue,
                                         onStructure=self._onStructure,
-                                        projectRoot=self.projectRoot)
+                                        projectRoot=self.projectRoot,
+                                        onSaveMaterial=self._onSaveMaterial)
         self.inspector.pack(side=tk.LEFT, fill=tk.Y)
 
     def _onTransform(self, obj, live=False):
@@ -247,26 +263,35 @@ class EditorApp:
 
     # ---- 场景文件 ----
     def _scenePath(self):
-        """scene.json 位置：项目根（无项目时用当前目录）。"""
+        """保存路径：当前打开的场景文件优先，否则项目根 scene.json。"""
+        if self.scenePath:
+            return self.scenePath
         base = self.projectRoot if self.projectRoot else Path.cwd()
         return base / "scene.json"
 
-    def newScene(self):
-        """新建空场景（文件菜单）。"""
-        self.scene = createDemoScene()
-        self.viewport.scene = self.scene
-        self.hierarchy.scene = self.scene
-        self.inspector.scene = self.scene
+    def _switchScene(self, scene, scenePath=None):
+        """把新场景接到所有面板（视口/层级/检查器）并刷新。"""
+        self.scene = scene
+        self.scenePath = scenePath
+        self.viewport.scene = scene
+        self.hierarchy.scene = scene
+        self.inspector.scene = scene
         self.selected = None
         self.viewport.setSelected(None)
         self.inspector.showObject(None)
         self.hierarchy.refresh()
         self.viewport.renderFrame()
 
+    def newScene(self):
+        """新建空场景（文件菜单，不落盘）。"""
+        self._switchScene(createDemoScene(), None)
+        self.status.showMessage("已新建演示场景（未保存）")
+
     def saveScene(self):
-        """保存场景到 scene.json（项目根）。"""
+        """保存场景到当前场景文件（或项目根 scene.json）。"""
         try:
             path = saveSceneFile(self.scene, self._scenePath())
+            self.scenePath = path
             self.status.showMessage(f"已保存 {path.name}")
         except OSError as e:
             messagebox.showerror(APP_NAME, f"保存失败：{e}")
@@ -277,28 +302,42 @@ class EditorApp:
         if not path.exists():
             messagebox.showinfo(APP_NAME, f"没有场景文件：{path}")
             return
-        self.scene = loadSceneFile(path)
-        self.viewport.scene = self.scene
-        self.hierarchy.scene = self.scene
-        self.inspector.scene = self.scene
-        self.selected = None
-        self.viewport.setSelected(None)
-        self.inspector.showObject(None)
-        self.hierarchy.refresh()
+        self.openSceneFile(path)
+
+    def openSceneFile(self, path):
+        """打开场景文件（项目面板双击 .vscene / Ctrl+O）。"""
+        path = Path(path)
+        if not path.is_file():
+            messagebox.showinfo(APP_NAME, f"场景文件不存在：{path}")
+            return
+        scene = loadSceneFile(path)
+        if not scene.objects:
+            messagebox.showinfo(APP_NAME, f"「{path.name}」为空场景，已打开。")
+        self._switchScene(scene, path)
+        self.status.showMessage(f"已打开场景 {path.name}")
+
+    def _onEditMaterial(self, rel):
+        """资源浏览器选中/双击 .vmat：检查器进入材质编辑模式。"""
+        if self.inspector is not None:
+            self.inspector.showMaterial(rel)
+
+    def _onSaveMaterial(self):
+        """材质保存完成：重绘视口（所有引用该材质的物体立即变色）。"""
         self.viewport.renderFrame()
-        self.status.showMessage(f"已打开 {path.name}")
+        self.status.showMessage("材质已保存")
 
     # ---- 创建物体 ----
     CREATE_OPTIONS = {
         "empty": ("空物体", lambda: GameObject(name="空物体")),
-        "cube": ("立方体", lambda: _goWith("cube", [0.35, 0.55, 0.85])),
-        "sphere": ("球体", lambda: _goWith("sphere", [0.55, 0.35, 0.75])),
+        "cube": ("立方体", lambda: _goWith("cube", material="default")),
+        "sphere": ("球体", lambda: _goWith("sphere", material="default")),
+        "camera": ("摄像机", _goCamera),
         "directional": ("方向光", lambda: _goLight("directional", [1.0, 1.0, 0.95], 1.0)),
         "point": ("点光源", lambda: _goLight("point", [1.0, 0.9, 0.7], 1.2)),
     }
 
     def createObject(self, kind):
-        """创建物体（工具栏选择列表）：空物体 / 立方体 / 球体 / 方向光 / 点光源。"""
+        """创建物体（工具栏选择列表）：空物体 / 立方体 / 球体 / 摄像机 / 方向光 / 点光源。"""
         maker = self.CREATE_OPTIONS.get(kind)
         if maker is None:
             self.status.showMessage(f"未知的创建类型：{kind}")
@@ -340,7 +379,7 @@ class EditorApp:
             self.status.showMessage(f"已把「{self.selected.name}」的网格设为 {rel}")
             return
         go = GameObject(name=Path(rel).stem)
-        go.addComponent(MeshRenderer(mesh=rel, color=[0.60, 0.65, 0.70]))
+        go.addComponent(MeshRenderer(mesh=rel, material="default"))
         n = len(self.scene.objects)
         go.transform.position = np.array([(n % 5) * 1.5, 0.75, (n // 5) * 1.5])
         self.scene.addObject(go)
@@ -384,7 +423,7 @@ def _testDataLayer():
     child = GameObject(name="子")
     child.transform.position = np.array([1.0, 2.0, 3.0])
     child.transform.rotation = np.array([0.0, 90.0, 0.0])
-    child.addComponent(MeshRenderer(mesh="sphere", color=[1.0, 0.5, 0.25]))
+    child.addComponent(MeshRenderer(mesh="sphere", material="default"))
     sun = GameObject(name="方向光")
     sun.addComponent(Light(lightType="directional", color=[1.0, 1.0, 0.9], intensity=1.5))
     scene.addObject(parent)
