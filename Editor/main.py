@@ -17,6 +17,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+import numpy as np
+
 # 包上下文自适应：既支持 python -m Editor.main（引擎根启动），
 # 也支持 python Editor/main.py（脚本启动，项目偏好），两种方式都能正常相对导入。
 if __package__ in (None, ""):
@@ -24,7 +26,8 @@ if __package__ in (None, ""):
     __package__ = "Editor"
 
 from .core.preferences import loadPreferences, savePreferences
-from .core.scene import createDemoScene
+from .core.scene import GameObject, MeshRenderer, createDemoScene, worldMatrix
+from .core.serializer import loadSceneFile, saveSceneFile
 from .renderer.glViewport import GLViewport
 from .renderer.orbitCamera import OrbitCamera
 from .ui.hierarchyPanel import HierarchyPanel
@@ -62,8 +65,15 @@ class EditorApp:
         self.root = root
         self.projectRoot = Path(projectRoot) if projectRoot else None
         self.projectName = readProjectName(self.projectRoot) if self.projectRoot else "（未命名项目）"
-        self.scene = createDemoScene()
+        # 打开项目时自动加载项目根 scene.json；没有则用演示场景
+        if self.projectRoot:
+            self.scene = loadSceneFile(self.projectRoot / "scene.json")
+            if not self.scene.objects:
+                self.scene = createDemoScene()
+        else:
+            self.scene = createDemoScene()
         self.prefs = loadPreferences()
+        self.selected = None            # 当前选中物体（结构刷新后恢复高亮用）
 
         root.title(f"{APP_NAME} — {self.projectName}")
         root.geometry("1280x760")
@@ -72,8 +82,10 @@ class EditorApp:
         self._buildMenu()
         self._buildLayout()
 
-        # 快捷键：Delete 删除选中（焦点在输入框时交给输入框）
+        # 快捷键：Delete 删除选中（焦点在输入框时交给输入框）；Ctrl+S/O 保存/打开
         root.bind("<Delete>", lambda e: self.deleteSelected())
+        root.bind("<Control-s>", lambda e: self.saveScene())
+        root.bind("<Control-o>", lambda e: self.openScene())
 
         # 帧率统计
         self._lastFrames = 0
@@ -84,6 +96,10 @@ class EditorApp:
     def _buildMenu(self):
         menubar = tk.Menu(self.root)
         mFile = tk.Menu(menubar, tearoff=0)
+        mFile.add_command(label="新建场景", command=self.newScene)
+        mFile.add_command(label="保存场景", accelerator="Ctrl+S", command=self.saveScene)
+        mFile.add_command(label="打开场景", accelerator="Ctrl+O", command=self.openScene)
+        mFile.add_separator()
         mFile.add_command(label="退出", accelerator="Alt+F4", command=self.root.destroy)
         menubar.add_cascade(label="文件", menu=mFile)
 
@@ -114,15 +130,16 @@ class EditorApp:
     def _showAbout(self):
         messagebox.showinfo(
             APP_NAME,
-            "Vortex 游戏编辑器（V2 骨架）\n"
+            "Vortex 游戏编辑器（V3 游戏对象系统）\n"
             "tkinter 界面 + OpenGL（WGL 嵌入）3D 视口\n"
-            "下一阶段：V3 游戏对象系统、V4 脚本组件与播放模式",
+            "GameObject + 组件（Transform / 网格渲染器）+ scene.json 序列化\n"
+            "下一阶段：V4 渲染核心、V5 脚本组件与播放模式",
         )
 
     # ---- 布局 ----
     def _buildLayout(self):
         # 工具栏
-        toolbar = Toolbar(self.root, projectName=self.projectName, padding=(0, 4))
+        toolbar = Toolbar(self.root, projectName=self.projectName, onCreate=self.createObject)
         toolbar.pack(fill=tk.X)
 
         # 主体：左列（层级+项目） | 视口 | 检查器
@@ -142,7 +159,9 @@ class EditorApp:
                                    prefs=self.prefs)
         self.viewport.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=2)
 
-        self.inspector = InspectorPanel(body, padding=(4, 0))
+        self.inspector = InspectorPanel(body, scene=self.scene,
+                                        onValue=self._onValue,
+                                        onStructure=self._onStructure)
         self.inspector.pack(side=tk.LEFT, fill=tk.Y)
 
         # 状态栏
@@ -151,6 +170,7 @@ class EditorApp:
 
     def _onSelect(self, obj):
         """层级 / 视口拾取都能选中物体，三处联动（检查器 + 视口描边 + 层级高亮）。"""
+        self.selected = obj
         if obj is None:
             self.viewport.setSelected(None)
             self.inspector.showObject(None)
@@ -158,6 +178,17 @@ class EditorApp:
         self.viewport.setSelected(obj)
         self.inspector.showObject(obj)
         self.hierarchy.selectObject(obj)
+
+    def _onValue(self):
+        """数值变化（变换/颜色）：仅重绘视口。"""
+        self.viewport.renderFrame()
+
+    def _onStructure(self):
+        """结构变化（名称/激活/父子/组件增删）：刷新层级 + 重绘，并恢复选中高亮。"""
+        self.hierarchy.refresh()
+        if self.selected is not None:
+            self.hierarchy.selectObject(self.selected)
+        self.viewport.renderFrame()
 
     def deleteSelected(self):
         """Delete：删除当前选中物体（焦点在输入框时交给输入框）。"""
@@ -167,11 +198,73 @@ class EditorApp:
         obj = self.viewport.selected
         if obj is None or self.scene is None:
             return
-        if obj in self.scene.objects:
-            self.scene.objects.remove(obj)
+        self.scene.removeObject(obj)   # 连带子树一起移除
+        self.selected = None
         self.viewport.setSelected(None)
         self.hierarchy.refresh()
         self.inspector.showObject(None)
+
+    # ---- 场景文件 ----
+    def _scenePath(self):
+        """scene.json 位置：项目根（无项目时用当前目录）。"""
+        base = self.projectRoot if self.projectRoot else Path.cwd()
+        return base / "scene.json"
+
+    def newScene(self):
+        """新建空场景（文件菜单）。"""
+        self.scene = createDemoScene()
+        self.viewport.scene = self.scene
+        self.hierarchy.scene = self.scene
+        self.inspector.scene = self.scene
+        self.selected = None
+        self.viewport.setSelected(None)
+        self.inspector.showObject(None)
+        self.hierarchy.refresh()
+        self.viewport.renderFrame()
+
+    def saveScene(self):
+        """保存场景到 scene.json（项目根）。"""
+        try:
+            path = saveSceneFile(self.scene, self._scenePath())
+            self.status.showMessage(f"已保存 {path.name}")
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"保存失败：{e}")
+
+    def openScene(self):
+        """打开场景（当前目录的项目根 scene.json，Ctrl+O）。"""
+        path = self._scenePath()
+        if not path.exists():
+            messagebox.showinfo(APP_NAME, f"没有场景文件：{path}")
+            return
+        self.scene = loadSceneFile(path)
+        self.viewport.scene = self.scene
+        self.hierarchy.scene = self.scene
+        self.inspector.scene = self.scene
+        self.selected = None
+        self.viewport.setSelected(None)
+        self.inspector.showObject(None)
+        self.hierarchy.refresh()
+        self.viewport.renderFrame()
+        self.status.showMessage(f"已打开 {path.name}")
+
+    # ---- 创建物体 ----
+    def createObject(self, kind):
+        """工具栏创建物体：empty / cube / sphere，新物体错位摆放（避免堆原点）。"""
+        if kind == "cube":
+            go = GameObject(name="立方体")
+            go.addComponent(MeshRenderer(mesh="cube", color=[0.35, 0.55, 0.85]))
+        elif kind == "sphere":
+            go = GameObject(name="球体")
+            go.addComponent(MeshRenderer(mesh="sphere", color=[0.55, 0.35, 0.75]))
+        else:
+            go = GameObject(name="空物体")
+        n = len(self.scene.objects)
+        go.transform.position = np.array([(n % 5) * 1.5, 0.75, (n // 5) * 1.5])
+        self.scene.addObject(go)
+        self._onSelect(go)
+        self.hierarchy.refresh()
+        self.hierarchy.selectObject(go)
+        self.viewport.renderFrame()
 
     # ---- 设置 ----
     def openSettings(self):
@@ -196,12 +289,54 @@ class EditorApp:
         self.root.after(REFRESH_MS, self._updateFPS)
 
 
+def _testDataLayer():
+    """无窗口数据层自检：组件 / 父子 / 世界矩阵 / 序列化往返。"""
+    from .core.scene import Scene
+    from .core.serializer import deserializeScene, serializeScene
+
+    scene = Scene()
+    parent = GameObject(name="父")
+    child = GameObject(name="子")
+    child.transform.position = np.array([1.0, 2.0, 3.0])
+    child.transform.rotation = np.array([0.0, 90.0, 0.0])
+    child.addComponent(MeshRenderer(mesh="sphere", color=[1.0, 0.5, 0.25]))
+    scene.addObject(parent)
+    scene.addObject(child)
+    scene.setParent(child, parent)
+    assert child.parent is parent and parent.children == [child], "setParent 失败"
+    # 世界矩阵：子平移应叠加父平移
+    parent.transform.position = np.array([10.0, 0.0, 0.0])
+    m = worldMatrix(child)
+    assert abs(m[0, 3] - 11.0) < 1e-6 and abs(m[1, 3] - 2.0) < 1e-6, "worldMatrix 未叠加父链"
+    # 序列化往返
+    data = serializeScene(scene)
+    restored = deserializeScene(data)
+    assert len(restored.objects) == 2, "反序列化物体数不符"
+    rp = restored.findByUuid(parent.uuid)
+    rc = restored.findByUuid(child.uuid)
+    assert rp is not None and rc is not None, "uuid 未保留"
+    assert rc.parent is rp, "父子引用未恢复"
+    assert rc.name == "子" and rc.active is True, "字段未恢复"
+    assert abs(rc.transform.position[1] - 2.0) < 1e-9, "Transform 未恢复"
+    mr = rc.getComponent(MeshRenderer)
+    assert mr is not None and mr.mesh == "sphere", "MeshRenderer 未恢复"
+    # 组件增删（Transform 不可移除）
+    assert parent.getComponent(MeshRenderer) is None
+    parent.addComponent(MeshRenderer(mesh="cube"))
+    assert parent.getComponent(MeshRenderer) is not None, "挂载组件失败"
+    assert parent.removeComponent(parent.getComponent(MeshRenderer)), "移除组件失败"
+    assert parent.getComponent(MeshRenderer) is None
+    assert not parent.removeComponent(parent.transform), "Transform 不应可移除"
+    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返")
+
+
 def selftest():
-    """无交互自检：临时项目 + 构建窗口 + OpenGL 渲染 3 帧 + 清理。"""
+    """无交互自检：数据层 + 临时项目 + 构建窗口 + OpenGL 渲染 3 帧 + 清理。"""
     import shutil
     import tempfile
 
     print("[自检] 开始…")
+    _testDataLayer()
     with tempfile.TemporaryDirectory(prefix="vortex_editor_selftest_") as tmp:
         proj = Path(tmp) / "自检项目"
         (proj / "Resources").mkdir(parents=True)

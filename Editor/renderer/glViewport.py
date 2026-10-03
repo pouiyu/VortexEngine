@@ -28,8 +28,8 @@ from OpenGL.GL import (GL_BLEND, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT,
                        glBegin, glBlendFunc, glClear, glClearColor, glColor3f,
                        glColor4f, glDepthFunc, glDisable, glEnable, glEnd,
                        glGetString, glLineWidth, glLoadIdentity, glMatrixMode,
-                       glPopMatrix, glPushMatrix, glTranslatef, glVertex3f,
-                       glViewport)
+                       glMultMatrixf, glPopMatrix, glPushMatrix, glTranslatef,
+                       glVertex3f, glViewport)
 from OpenGL.GLU import gluLookAt, gluPerspective
 
 # WGL 嵌入 tkinter 时，窗口重绘/交换缓冲与异步查询交错的时机，
@@ -47,6 +47,7 @@ except Exception:
     pass
 
 from .orbitCamera import OrbitCamera
+from ..core.scene import MeshRenderer, worldMatrix
 
 # ---- Win32 / WGL 常量 ----
 GCL_STYLE = -16
@@ -106,6 +107,7 @@ class GLViewport(tk.Frame):
 
         self._hdc = None
         self._ctx = None
+        self._hwnd = 0           # 建上下文时窗口的 HWND（用于检测窗口重建）
         self._running = False
         self._after = None
 
@@ -113,6 +115,7 @@ class GLViewport(tk.Frame):
         self._pressX = self._pressY = None   # 左键按下位置
         self._moved = False                   # 左键是否已发生拖拽
         self._flyActive = False               # 中键浏览模式
+        self._flyRefX = self._flyRefY = 0     # 浏览转头基准（实际光标物理坐标）
         self._chars = set()                   # 当前按下的键名集合
 
         # 帧率
@@ -136,12 +139,30 @@ class GLViewport(tk.Frame):
     # ---- OpenGL 上下文 ----
     def initGL(self):
         """创建 WGL 上下文（窗口可见后调用，自动重试）。"""
-        if self._ctx is not None:
-            return
+        try:
+            ready = self._ensureContext()
+        except OSError:
+            ready = False
+        if ready:
+            if self._after is None:
+                self._after = self.after(REF, self._tick)   # 首帧由 after 驱动（避免竞态）
+        else:
+            self.after(50, self.initGL)
+
+    def _ensureContext(self):
+        """确保上下文与当前 HWND 匹配；tkinter 重建窗口导致 HWND 变化时自动重建。
+
+        返回是否已就绪（上下文存在且 hwnd 匹配）。"""
         hwnd = int(self.winfo_id())
         if hwnd == 0:
-            self.after(50, self.initGL)
-            return
+            return False
+        if self._ctx is not None and hwnd == self._hwnd:
+            return True
+        self._teardownGL()          # 释放旧 HDC/上下文，避免残留
+        return self._createContext(hwnd)
+
+    def _createContext(self, hwnd):
+        """在指定 HWND 上创建 WGL 上下文（CS_OWNDC + 双缓冲 + 深度）。"""
         style = self._user32.GetClassLongW(hwnd, GCL_STYLE)
         self._user32.SetClassLongW(hwnd, GCL_STYLE, style | CS_OWNDC)
         hdc = self._user32.GetDC(hwnd)
@@ -163,32 +184,65 @@ class GLViewport(tk.Frame):
         if not ctx:
             self._user32.ReleaseDC(hwnd, hdc)
             raise OSError("wglCreateContext 失败")
-        self._opengl32.wglMakeCurrent(hdc, ctx)
+        if not self._opengl32.wglMakeCurrent(hdc, ctx):
+            self._opengl32.wglDeleteContext(ctx)
+            self._user32.ReleaseDC(hwnd, hdc)
+            raise OSError("wglMakeCurrent 失败")
+        self._hwnd = hwnd
         self._hdc, self._ctx = hdc, ctx
         self._running = True
-        self._after = self.after(REF, self._tick)   # 首帧由 after 驱动（避免竞态）
+        return True
+
+    def _teardownGL(self):
+        """释放旧上下文 / DC（供窗口重建或析构复用，不停止渲染循环）。"""
+        if self._ctx is not None:
+            try:
+                self._opengl32.wglMakeCurrent(None, None)
+                self._opengl32.wglDeleteContext(self._ctx)
+            except Exception:
+                pass
+        if self._hdc is not None:
+            try:
+                self._user32.ReleaseDC(self._hwnd, self._hdc)
+            except Exception:
+                pass
+        self._hwnd = 0
+        self._hdc = None
+        self._ctx = None
 
     def glVersion(self):
         """OpenGL 版本字符串（自检用）。
 
-        WGL 嵌入下建上下文后立即查询偶发 1282 / makecurrent 失败，
-        这里清错误队列 + 重试数次，保证自检稳定。"""
-        if self._ctx is None or not self._hdc:
+        WGL 嵌入下建上下文后立即查询偶发 1282 / makecurrent 失败（根因：tkinter
+        重建窗口使 HWND 变化、旧 HDC 失效）。这里先 _ensureContext 自动重建，
+        再用原生 ctypes 直调 opengl32 清队列 + 查询，保证自检稳定。"""
+        if not self._ensureContext():
             return None
-        from OpenGL.GL import glGetError, glGetString
-        for _ in range(4):
+        glGetError = self._opengl32.glGetError
+        glGetError.restype = ctypes.c_uint
+        glGetString = self._opengl32.glGetString
+        glGetString.restype = ctypes.c_void_p
+        glGetString.argtypes = [ctypes.c_uint]
+        GL_VERSION = 0x1F02
+        for _ in range(10):
             if not self._opengl32.wglMakeCurrent(self._hdc, self._ctx):
-                time.sleep(0.03)
+                time.sleep(0.05)
                 continue
-            while glGetError() != 0:      # 清掉建上下文阶段残留的错误标志
-                pass
+            for _ in range(64):                     # 限次清错误队列（防死循环）
+                if glGetError() == 0:
+                    break
             try:
-                raw = glGetString(GL_VERSION)
-                if raw:
-                    return bytes(raw).decode("utf-8", "replace")
+                ptr = glGetString(GL_VERSION)
             except Exception:
-                pass
-            time.sleep(0.03)
+                ptr = None
+            if ptr:
+                try:
+                    raw = ctypes.string_at(ptr)
+                    if raw:
+                        return raw.decode("utf-8", "replace")
+                except Exception:
+                    pass
+            time.sleep(0.05)
         return None
 
     # ---- 偏好 ----
@@ -206,11 +260,11 @@ class GLViewport(tk.Frame):
         """按当前窗口与相机设置投影/模型矩阵（渲染与拾取共用）。"""
         w, h = self.winfo_width(), self.winfo_height()
         if w <= 0 or h <= 0:
-            h = max(h, 1)
-        glViewport(0, 0, w, max(h, 1))
+            return
+        glViewport(0, 0, w, h)
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        gluPerspective(50.0, w / max(h, 1), 0.1, 2000.0)
+        gluPerspective(50.0, w / h, 0.1, 2000.0)
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
         eye, center, up = self.camera.lookAtArgs()
@@ -218,7 +272,9 @@ class GLViewport(tk.Frame):
 
     def renderFrame(self):
         """渲染一帧（自检可直调）。"""
-        if not self._running or self._ctx is None:
+        if not self._running:
+            return
+        if not self._ensureContext():
             return
         if not self._opengl32.wglMakeCurrent(self._hdc, self._ctx):
             return
@@ -232,43 +288,65 @@ class GLViewport(tk.Frame):
         self._gdi32.SwapBuffers(self._hdc)
 
     def _drawGrid(self):
-        """地面网格：范围随视距扩大，边缘渐隐（无限延伸观感），中心跟随视野。"""
+        """地面网格：网格线锚定在世界整数坐标上（平移/浏览时随世界一起移动，
+        不会钉在视野中心或抖动）；窗口覆盖视锥并随视距扩大，边缘按与视野中心
+        的世界距离渐隐（无限延伸观感）。半径设上限，避免远距时线数过多拖慢帧率。"""
         cx, cz = self.camera.target[0], self.camera.target[2]
-        r = max(15, int(self.camera.distance * 8))
+        rf = min(max(15.0, self.camera.distance * 8.0), 800.0)   # 连续半径（渐隐包络用）
+        r = int(rf)                                               # 整数窗口半径（画线范围用）
+        gx, gz = math.floor(cx), math.floor(cz)                   # 窗口中心下取整 → 线落在整数格
+        x0, x1 = gx - r, gx + r
+        z0, z1 = gz - r, gz + r
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glBegin(GL_LINES)
-        for i in range(-r, r + 1):
-            t = 1.0 - abs(i) / r
+        for x in range(x0, x1 + 1):
+            t = 1.0 - abs(x - cx) / rf
             a = max(0.0, t * t)
+            if a <= 0.001:
+                continue
             glColor4f(0.35, 0.37, 0.42, a)
-            glVertex3f(cx + i, 0, cz - r); glVertex3f(cx + i, 0, cz + r)
-            glVertex3f(cx - r, 0, cz + i); glVertex3f(cx + r, 0, cz + i)
+            glVertex3f(x, 0, z0); glVertex3f(x, 0, z1)
+        for z in range(z0, z1 + 1):
+            t = 1.0 - abs(z - cz) / rf
+            a = max(0.0, t * t)
+            if a <= 0.001:
+                continue
+            glColor4f(0.35, 0.37, 0.42, a)
+            glVertex3f(x0, 0, z); glVertex3f(x1, 0, z)
         glEnd()
-        glBegin(GL_LINES)   # 主轴醒目标识（X 红 / Z 蓝）
-        glColor4f(0.85, 0.25, 0.25, 1.0); glVertex3f(cx, 0.01, cz); glVertex3f(cx + r * 0.8, 0.01, cz)
-        glColor4f(0.25, 0.45, 0.85, 1.0); glVertex3f(cx, 0.01, cz); glVertex3f(cx, 0.01, cz + r * 0.8)
+        # 世界坐标轴（锚定世界原点，随世界一起移动；X 红 / Y 绿 / Z 蓝）
+        L = max(2.0, self.camera.distance * 0.35)
+        glBegin(GL_LINES)
+        glColor4f(0.85, 0.25, 0.25, 1.0); glVertex3f(0, 0.02, 0); glVertex3f(L, 0.02, 0)
+        glColor4f(0.25, 0.75, 0.35, 1.0); glVertex3f(0, 0.02, 0); glVertex3f(0, L, 0)
+        glColor4f(0.25, 0.45, 0.85, 1.0); glVertex3f(0, 0.02, 0); glVertex3f(0, 0.02, L)
         glEnd()
         glDisable(GL_BLEND)
 
     def _drawScene(self):
-        """绘制场景物体；选中物体叠加黄色描边。"""
+        """绘制场景物体（世界矩阵 + MeshRenderer 组件）；选中物体叠加黄色描边。"""
         for obj in (self.scene.objects if self.scene else []):
-            if not obj.active or not obj.mesh:
+            if not obj.active:
                 continue
-            t = obj.transform
+            mr = obj.getComponent(MeshRenderer)
+            if mr is None or not mr.mesh:
+                continue
             glPushMatrix()
-            glTranslatef(t.position[0], t.position[1], t.position[2])
-            if obj.mesh == "cube":
-                self._drawCubeUnit()
-                if obj is self.selected:
-                    self._drawOutline()
+            glMultMatrixf(worldMatrix(obj).T.flatten())   # 列优先传给 GL（含父子链）
+            color = tuple(mr.color)
+            if mr.mesh == "cube":
+                self._drawCubeUnit(color)
+            elif mr.mesh == "sphere":
+                self._drawSphereUnit(color)
+            if obj is self.selected:
+                self._drawOutline(mr.mesh)
             glPopMatrix()
 
     @staticmethod
-    def _drawCubeUnit():
-        """单位立方体（边长 2，中心在原点）。"""
-        glColor3f(0.30, 0.55, 0.85)
+    def _drawCubeUnit(color):
+        """单位立方体（边长 2，中心在原点），用组件颜色 + 深色描边。"""
+        glColor3f(*color)
         glBegin(GL_QUADS)
         for quad in _CUBE_QUADS:
             for v in quad:
@@ -280,12 +358,28 @@ class GLViewport(tk.Frame):
             glVertex3f(*a); glVertex3f(*b)
         glEnd()
 
-    def _drawOutline(self):
-        """选中物体黄色描边（加粗 + 偏移避免深度冲突）。"""
+    @staticmethod
+    def _drawSphereUnit(color):
+        """单位球体（半径 1，经纬网格），用组件颜色 + 深色描边。"""
+        glColor3f(*color)
+        glBegin(GL_QUADS)
+        for quad in _SPHERE_QUADS:
+            for v in quad:
+                glVertex3f(*v)
+        glEnd()
+        glColor3f(0.10, 0.12, 0.15)
+        glBegin(GL_LINES)
+        for a, b in _SPHERE_EDGES:
+            glVertex3f(*a); glVertex3f(*b)
+        glEnd()
+
+    def _drawOutline(self, mesh):
+        """选中物体黄色描边（单位几何放大 1.02，已随物体世界矩阵变换）。"""
+        edges = _CUBE_EDGES if mesh == "cube" else _SPHERE_EDGES
         glLineWidth(3.0)
         glColor3f(1.0, 0.85, 0.20)
         glBegin(GL_LINES)
-        for a, b in _CUBE_EDGES:
+        for a, b in edges:
             glVertex3f(a[0] * 1.02, a[1] * 1.02, a[2] * 1.02)
             glVertex3f(b[0] * 1.02, b[1] * 1.02, b[2] * 1.02)
         glEnd()
@@ -296,27 +390,26 @@ class GLViewport(tk.Frame):
         """把视口内的点击坐标投影为场景物体（命中包围盒，取离点击中心最近的）。"""
         if not self._running or self.scene is None:
             return None
+        if not self._ensureContext():
+            return None
         self._opengl32.wglMakeCurrent(self._hdc, self._ctx)
         h = max(self.winfo_height(), 1)
         self._setupView()
         best, bestDist = None, 1e18
         for obj in self.scene.objects:
-            if not obj.active or not obj.mesh:
+            if not obj.active or obj.getComponent(MeshRenderer) is None:
                 continue
-            t = obj.transform
-            sx, sy, sz = t.scale
-            corner = []
-            for dx in (-sx, sx):
-                for dy in (-sy, sy):
-                    for dz in (-sz, sz):
-                        corner.append((t.position[0] + dx, t.position[1] + dy, t.position[2] + dz))
-            pts = [self._project(p) for p in corner]
-            if not pts:
+            m = worldMatrix(obj)
+            pts = [self._project((m @ np.array([dx, dy, dz, 1.0]))[:3])
+                   for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1)]
+            if not pts or any(p is None for p in pts):
                 continue
             minx = min(p[0] for p in pts); maxx = max(p[0] for p in pts)
             miny = min(p[1] for p in pts); maxy = max(p[1] for p in pts)
             if minx <= x <= maxx and miny <= y <= maxy:
-                c = self._project(t.position)
+                c = self._project(m[:3, 3])
+                if c is None:
+                    continue
                 d = math.hypot(x - c[0], y - c[1])
                 if d < bestDist:
                     best, bestDist = obj, d
@@ -364,15 +457,22 @@ class GLViewport(tk.Frame):
         self._flyActive = True
         self._hideCursor(True)
         self.focus_set()
+        # 以“当前实际光标位置”为转头基准（物理屏幕坐标，兼容高 DPI）
+        self._flyRefX, self._flyRefY = self._cursorPos()
         self._warpToCenter()
+        # 回中后以实际落点为基准，吸收 DPI 缩放/回写延迟的偏差
+        self._flyRefX, self._flyRefY = self._cursorPos()
 
     def _onMiddleMotion(self, event):
         if not self._flyActive:
             return
-        cx, cy = self._viewportCenter()
-        dx, dy = event.x_root - cx, event.y_root - cy
-        self.camera.orbit(dx, dy)     # 中键拖动转头（同环绕手感）
+        x, y = self._cursorPos()
+        dx, dy = x - self._flyRefX, y - self._flyRefY
+        if abs(dx) < 1 and abs(dy) < 1:
+            return                      # 回中回显：光标已回中心，忽略避免抖动
+        self.camera.orbit(dx, dy)       # 中键拖动转头（同环绕手感）
         self._warpToCenter()
+        self._flyRefX, self._flyRefY = self._cursorPos()   # 以新落点为基准
 
     def _onReleaseMiddle(self, _event):
         self._flyActive = False
@@ -422,14 +522,12 @@ class GLViewport(tk.Frame):
             self._moved = True
             self._pressX, self._pressY = event.x, event.y
             self.camera.pan(dx, dy)
-            self.renderFrame()
             return
         if abs(dx) < 2 and abs(dy) < 2:
             return
         self._moved = True
         self._pressX, self._pressY = event.x, event.y
         self.camera.orbit(dx, dy)
-        self.renderFrame()
 
     def _onReleaseLeft(self, event):
         if not self._moved and self._pressX is not None:
@@ -443,12 +541,17 @@ class GLViewport(tk.Frame):
 
     def _onWheel(self, event):
         self.camera.zoom(event.delta)
-        self.renderFrame()
 
     # ---- 辅助 ----
+    def _cursorPos(self):
+        """当前光标在屏幕上的物理像素坐标（GetCursorPos，兼容高 DPI）。"""
+        pt = wt.POINT()
+        self._user32.GetCursorPos(ctypes.byref(pt))
+        return pt.x, pt.y
+
     def _hideCursor(self, hide):
         try:
-            self._user32.ShowCursor(int(hide))   # <0 隐藏 / >=0 显示
+            self._user32.ShowCursor(0 if hide else 1)   # FALSE=隐藏 / TRUE=显示
         except Exception:
             pass
         self.configure(cursor="none" if hide else "crosshair")
@@ -468,21 +571,15 @@ class GLViewport(tk.Frame):
 
     # ---- 释放 ----
     def dispose(self):
-        """析构：释放 OpenGL 上下文。"""
+        """析构：停止渲染循环并释放 OpenGL 上下文。"""
         self._running = False
         if self._after is not None:
             try:
                 self.after_cancel(self._after)
             except Exception:
                 pass
-        if self._ctx is not None:
-            try:
-                self._opengl32.wglMakeCurrent(None, None)
-                self._opengl32.wglDeleteContext(self._ctx)
-            except Exception:
-                pass
-            self._user32.ReleaseDC(int(self.winfo_id()), self._hdc)
-            self._ctx = None
+            self._after = None
+        self._teardownGL()
 
 
 # ---- 立方体几何数据 ----
@@ -500,3 +597,29 @@ for quad in _CUBE_QUADS:
         a, b = quad[i], quad[(i + 1) % 4]
         if (b, a) not in _CUBE_EDGES:
             _CUBE_EDGES.append((a, b))
+
+
+def _makeSphere(stacks=10, slices=16):
+    """生成单位球体的经纬网格四边面（中心在原点，半径 1）。"""
+    quads = []
+    for i in range(stacks):
+        phi0 = math.pi * i / stacks
+        phi1 = math.pi * (i + 1) / stacks
+        for j in range(slices):
+            th0 = 2 * math.pi * j / slices
+            th1 = 2 * math.pi * (j + 1) / slices
+
+            def _v(phi, th):
+                return (math.sin(phi) * math.cos(th), math.cos(phi), math.sin(phi) * math.sin(th))
+
+            quads.append([_v(phi0, th0), _v(phi0, th1), _v(phi1, th1), _v(phi1, th0)])
+    edges = []
+    for quad in quads:
+        for i in range(4):
+            a, b = quad[i], quad[(i + 1) % 4]
+            if (b, a) not in edges:
+                edges.append((a, b))
+    return quads, edges
+
+
+_SPHERE_QUADS, _SPHERE_EDGES = _makeSphere()
