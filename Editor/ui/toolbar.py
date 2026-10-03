@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""工具栏：项目名 + 创建物体下拉列表 + 播放占位。
+"""工具栏：项目名 + 创建物体下拉列表 + Gizmo 模式切换 + 播放占位。
 
 创建物体改为「选择列表」：点按钮弹菜单，列出空物体 / 立方体 / 球体 /
 方向光 / 点光源（kind 交给 main.createObject 处理）。
+Gizmo 模式：移动 / 旋转 / 缩放三个互斥按钮（onGizmoMode 回调给 main）。
 """
 
 from pathlib import Path
@@ -20,21 +21,35 @@ CREATE_ITEMS = [
     ("点光源", "point"),
 ]
 
+# Gizmo 模式按钮：显示名 → mode（与 GLViewport.gizmoMode 一致）
+GIZMO_MODES = [
+    ("移动", "move"),
+    ("旋转", "rotate"),
+    ("缩放", "scale"),
+]
+
 
 class Toolbar(ttk.Frame):
     """编辑器顶部工具栏。
 
     onCreate(kind)：由 main 提供，kind 为 CREATE_ITEMS 中的值。
+    onGizmoMode(mode)：由 main 提供，切换视口 Gizmo 模式。
     """
 
-    def __init__(self, master, projectName="未命名项目", onCreate=None, **kw):
+    def __init__(self, master, projectName="未命名项目", onCreate=None,
+                 onGizmoMode=None, **kw):
         super().__init__(master, **kw)
         self._images = {}
         self.onCreate = onCreate
+        self.onGizmoMode = onGizmoMode
+        self._gizmoButtons = {}
+        self._gizmoModeVar = tk.StringVar(value="move")
         ttk.Label(self, text=f"项目：{projectName}", padding=(8, 4)).pack(side=tk.LEFT)
 
         ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
         self._createMenu()
+        ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
+        self._gizmoButtonsRow()
         ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
         self._textButton("播放", None, hint="播放模式 V5 实现")
 
@@ -46,6 +61,24 @@ class Toolbar(ttk.Frame):
             menu.add_command(label=label, command=lambda k=kind: self._trigger(k, label))
         menubtn.config(menu=menu)
         menubtn.pack(side=tk.LEFT, padx=2)
+
+    def _gizmoButtonsRow(self):
+        """Gizmo 模式互斥按钮（移动/旋转/缩放），选中项高亮。"""
+        for label, mode in GIZMO_MODES:
+            rb = ttk.Radiobutton(self, text=label, value=mode,
+                                 variable=self._gizmoModeVar,
+                                 command=lambda m=mode: self._triggerGizmo(m))
+            rb.pack(side=tk.LEFT, padx=2)
+            self._gizmoButtons[mode] = rb
+
+    def _triggerGizmo(self, mode):
+        if self.onGizmoMode:
+            self.onGizmoMode(mode)
+
+    def setGizmoMode(self, mode):
+        """外部（键盘 W/E/R 切换）同步按钮状态。"""
+        if mode in self._gizmoButtons:
+            self._gizmoModeVar.set(mode)
 
     def _textButton(self, text, kind, hint=None):
         """纯文字按钮（播放占位）。"""

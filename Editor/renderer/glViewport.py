@@ -74,6 +74,9 @@ PFD_TYPE_RGBA = 0
 REF = 16          # 每帧间隔 ms（约 60 FPS）
 CLICK_TOL = 5.0   # 位移小于该像素视为「点击」（拾取），否则视为拖拽
 
+# Gizmo 旋转：每帧最大角增量（度）。@60FPS 下约 480°/s，跟手且不跳变。
+ROTATE_MAX_DEG_PER_FRAME = 8.0
+
 # 默认按键绑定（动作 → 键名）
 DEFAULT_KEYS = {
     "forward": "w", "back": "s", "left": "a", "right": "d",
@@ -104,12 +107,13 @@ class GLViewport(tk.Frame):
     """嵌入 tkinter 的 OpenGL 3D 视口。"""
 
     def __init__(self, master, scene=None, onSelect=None, prefs=None, projectRoot=None,
-                 onTransform=None, **kw):
+                 onTransform=None, onGizmoModeChanged=None, **kw):
         kw.setdefault("background", "#1e1e22")
         super().__init__(master, **kw)
         self.scene = scene
         self.onSelect = onSelect          # 拾取选中回调（main 提供）
-        self.onTransform = onTransform    # Gizmo 变换结束回调（刷新检查器）
+        self.onTransform = onTransform    # Gizmo 变换回调（live=拖动中 / False=结束）
+        self.onGizmoModeChanged = onGizmoModeChanged   # Gizmo 模式切换回调（同步工具栏）
         self.selected = None              # 当前选中物体（黄色描边）
         self.projectRoot = projectRoot    # 项目根（解析 Resources 下 .obj 用）
         self.camera = OrbitCamera()
@@ -120,8 +124,9 @@ class GLViewport(tk.Frame):
         # Gizmo 状态
         self.gizmoMode = "move"           # "move" / "rotate" / "scale"
         self._gizmoDrag = None            # 当前拖拽的轴（"x"/"y"/"z"/"plane"）
-        self._gizmoStart = None           # 拖拽起始参考点（世界坐标）
-        self._gizmoStartT = None          # 拖拽起始参数（t / (ref, base)）
+        self._gizmoStart = None           # 起始物体位置（世界坐标，move 绝对式基准）
+        self._gizmoStartScale = None      # 起始缩放（scale 绝对式基准）
+        self._gizmoStartT = None          # move/scale: (sx,sy) 起始屏幕点；rotate: (refHit, lastAngle)
 
         # Win32 动态库
         self._gdi32 = ctypes.WinDLL("gdi32.dll")
@@ -509,7 +514,11 @@ class GLViewport(tk.Frame):
     def _drawGrid(self):
         """地面网格：网格线锚定在世界整数坐标上（平移/浏览时随世界一起移动，
         不会钉在视野中心或抖动）；窗口覆盖视锥并随视距扩大，边缘按与视野中心
-        的世界距离渐隐（无限延伸观感）。半径设上限，避免远距时线数过多拖慢帧率。"""
+        的世界距离渐隐（无限延伸观感）。半径设上限，避免远距时线数过多拖慢帧率。
+
+        网格是辅助显示，不参与光照：开头显式关 GL_LIGHTING（上一帧场景绘制
+        会重新开启它），保证网格/坐标轴颜色不被材质光照影响。"""
+        glDisable(GL_LIGHTING)
         cx, cz = self.camera.target[0], self.camera.target[2]
         rf = min(max(15.0, self.camera.distance * 8.0), 800.0)   # 连续半径（渐隐包络用）
         r = int(rf)                                               # 整数窗口半径（画线范围用）
@@ -647,21 +656,27 @@ class GLViewport(tk.Frame):
             self.camera.move(fAmt, rAmt, uAmt, dt)
 
     # ---- 按键 ----
+    def setGizmoMode(self, mode):
+        """切换 Gizmo 模式（"move"/"rotate"/"scale"），同步回调（工具栏按钮）。"""
+        if mode not in ("move", "rotate", "scale"):
+            return
+        self.gizmoMode = mode
+        self.renderFrame()
+        if self.onGizmoModeChanged:
+            self.onGizmoModeChanged(mode)
+
     def _onKeyPress(self, event):
         # W/E/R 切换 Gizmo 模式（浏览模式激活时交给 WASD 移动）
         if not self._flyActive:
             k = event.keysym.lower()
             if k == "w":
-                self.gizmoMode = "move"
-                self.renderFrame()
+                self.setGizmoMode("move")
                 return
             if k == "e":
-                self.gizmoMode = "rotate"
-                self.renderFrame()
+                self.setGizmoMode("rotate")
                 return
             if k == "r":
-                self.gizmoMode = "scale"
-                self.renderFrame()
+                self.setGizmoMode("scale")
                 return
         for action, key in self.keyBinds.items():
             if event.keysym.lower() == key.lower():
@@ -684,8 +699,9 @@ class GLViewport(tk.Frame):
             axis = self._pickGizmo(event.x, event.y)
             if axis is not None:
                 self._gizmoDrag = axis
-                self._gizmoStart = self._gizmoOrigin()
-                # move/scale 记录起始屏幕点（增量按屏幕投影换算）；
+                self._gizmoStart = np.asarray(self._gizmoOrigin(), dtype=float).copy()
+                self._gizmoStartScale = np.asarray(self.selected.transform.scale, dtype=float).copy()
+                # move/scale 记录起始屏幕点（按绝对位移换算，跟手）；
                 # rotate 首帧由 _dragRotate 初始化参考平面点
                 self._gizmoStartT = None if self.gizmoMode == "rotate" else (event.x, event.y)
                 self._moved = True   # 视为拖拽，不触发拾取
@@ -707,7 +723,6 @@ class GLViewport(tk.Frame):
         if self._gizmoDrag is not None:
             # Gizmo 拖拽：按轴变换选中物体
             self._moved = True
-            self._pressX, self._pressY = event.x, event.y
             self._dragGizmo(event.x, event.y)
             return
         if abs(dx) < 2 and abs(dy) < 2:
@@ -728,10 +743,11 @@ class GLViewport(tk.Frame):
         self._moved = False
         self._gizmoDrag = None
         self._gizmoStart = None
+        self._gizmoStartScale = None
         self._gizmoStartT = None
         if wasGizmo and self.onTransform:
-            # Gizmo 变换结束：刷新检查器数值框
-            self.onTransform(self.selected)
+            # Gizmo 变换结束：完整刷新检查器
+            self.onTransform(self.selected, live=False)
 
     # ---- Gizmo 拾取与拖拽 ----
     def _pickGizmo(self, x, y):
@@ -756,61 +772,73 @@ class GLViewport(tk.Frame):
         return best
 
     def _dragGizmo(self, x, y):
-        """按当前 Gizmo 模式变换选中物体。"""
+        """按当前 Gizmo 模式变换选中物体（每帧绝对量计算，跟手）。"""
         if self.selected is None or self._gizmoStart is None:
             return
-        origin = self._gizmoStart
         axis = self._gizmoDrag
-        size = self._gizmoSize(origin)
         if self.gizmoMode == "rotate":
-            self._dragRotate(x, y, origin, axis)
+            self._dragRotate(x, y, axis)
         elif self.gizmoMode == "scale":
-            self._dragScale(x, y, origin, axis, size)
+            self._dragScale(x, y, axis)
         else:
-            self._dragMove(x, y, origin, axis)
-        self.renderFrame()   # 拖动中仅重绘（避免每帧重建检查器）
+            self._dragMove(x, y, axis)
+        self.renderFrame()
+        if self.onTransform:
+            self.onTransform(self.selected, live=True)   # 实时刷新检查器数值（不重建）
 
-    def _dragMove(self, x, y, origin, axis):
-        """移动：鼠标屏幕位移投影到轴的屏幕方向 → 沿轴位移（方向与视觉一致）。"""
-        delta = self._screenAxisDelta(x, y, origin, axis)
+    def _dragMove(self, x, y, axis):
+        """移动：鼠标位移投影到轴屏幕方向（用当前物体位置换算比例），
+        位移 = 起始位置 + 轴 × 投影量（绝对量，不累积漂移，跟手）。"""
+        origin = self._gizmoOrigin()
+        if origin is None:
+            return
+        proj = self._screenAxisProj(x, y, origin, axis)
         tr = self.selected.transform
-        tr.position = np.asarray(tr.position, dtype=float) + self._axisVec(axis) * delta
-        self._syncSelected()
+        tr.position = self._gizmoStart + self._axisVec(axis) * proj
 
-    def _dragScale(self, x, y, origin, axis, size):
-        """缩放：屏幕位移投影到轴 → 仅该轴缩放（非等比，每轴独立）。"""
-        delta = self._screenAxisDelta(x, y, origin, axis)
-        factor = 1.0 + delta / max(size, 1e-6)
+    def _dragScale(self, x, y, axis):
+        """缩放：鼠标位移投影到轴 → 起始缩放 × 因子（非等比，每轴独立）。"""
+        origin = self._gizmoOrigin()
+        if origin is None:
+            return
+        size = self._gizmoSize(origin)
+        proj = self._screenAxisProj(x, y, origin, axis)
+        factor = 1.0 + proj / max(size, 1e-6)
         tr = self.selected.transform
-        sc = np.asarray(tr.scale, dtype=float).copy()
+        sc = self._gizmoStartScale.copy()
         idx = {"x": 0, "y": 1, "z": 2}[axis]
         sc[idx] = max(sc[idx] * factor, 0.05)
         tr.scale = sc
-        self._syncSelected()
 
-    def _screenAxisDelta(self, x, y, origin, axis):
-        """鼠标从起始点的屏幕位移 → 沿该轴的位移量（世界单位）。
+    def _screenAxisProj(self, x, y, origin, axis):
+        """鼠标从起始屏幕点的位移 → 沿该轴的世界位移量（跟手核心）。
 
-        把轴线段两端投影到屏幕，得到「轴上 1 世界单位 = 多少像素」的换算
-        与轴屏幕方向；鼠标位移在轴方向上的投影 ÷ 换算系数 = 世界位移。
-        方向天然与视觉一致（沿屏幕上看到的轴方向拖动 = 物体沿轴移动）。"""
+        比例用「当前」物体位置换算（轴上 size 世界单位 = 多少屏幕像素），
+        方向 = 轴在屏幕上的方向；鼠标位移在轴方向上的投影 ÷ 比例 = 世界位移。
+        起始点是按下时的屏幕坐标，全程绝对量 → 无累积误差、方向始终与视觉一致。"""
         sx, sy = self._gizmoStartT if isinstance(self._gizmoStartT, tuple) else (x, y)
+        size = self._gizmoSize(origin)
         p0 = self._project(origin)
-        p1 = self._project(origin + self._axisVec(axis) * self._gizmoSize(origin))
+        p1 = self._project(origin + self._axisVec(axis) * size)
         if p0 is None or p1 is None:
             return 0.0
         ax, ay = p1[0] - p0[0], p1[1] - p0[1]
         length = math.hypot(ax, ay)
         if length < 1e-6:
             return 0.0
-        proj = ((x - sx) * ax + (y - sy) * ay) / length   # 像素位移沿轴投影
-        size = self._gizmoSize(origin)
-        return proj * (size / length)                     # 像素 → 世界单位
+        projPx = ((x - sx) * ax + (y - sy) * ay) / length   # 像素位移沿轴投影
+        return projPx * (size / length)                     # 像素 → 世界单位
 
-    def _dragRotate(self, x, y, origin, axis):
-        """旋转：射线与过原点、法线为轴的平面求交，角度增量 → 绕轴旋转。"""
+    def _dragRotate(self, x, y, axis):
+        """旋转：射线与过原点、法线为轴的平面求交，逐帧增量角度 → 绕轴旋转。
+
+        - 参考点固定为按下时的平面交点，角度全程从参考算起（绝对量，不累积漂移）
+        - 每帧限制最大角速度（ROTATE_MAX_DEG_PER_FRAME），快速拖动不跳变"""
         rayO, rayD = self._screenRay(x, y)
         if rayD is None:
+            return
+        origin = self._gizmoOrigin()
+        if origin is None:
             return
         n = self._axisVec(axis)
         denom = float(rayD @ n)
@@ -821,8 +849,8 @@ class GLViewport(tk.Frame):
         if self._gizmoStartT is None:
             self._gizmoStartT = (hit, 0.0)
             return
-        ref, base = self._gizmoStartT
-        # 以参考平面点建立局部坐标（u,v），用 atan2 求旋转角
+        ref, lastDeg = self._gizmoStartT
+        # 以参考平面点建立局部坐标（u,v），用 atan2 求当前相对参考的总角
         u = np.array([1.0, 0.0, 0.0])
         if abs(float(u @ n)) > 0.9:
             u = np.array([0.0, 0.0, 1.0])
@@ -831,20 +859,21 @@ class GLViewport(tk.Frame):
         v = np.cross(n, u)
         angNow = math.atan2(float((hit - origin) @ v), float((hit - origin) @ u))
         angRef = math.atan2(float((ref - origin) @ v), float((ref - origin) @ u))
-        delta = angNow - angRef
-        if delta > math.pi: delta -= 2 * math.pi
-        if delta < -math.pi: delta += 2 * math.pi
+        total = angNow - angRef
+        if total > math.pi: total -= 2 * math.pi
+        if total < -math.pi: total += 2 * math.pi
+        totalDeg = math.degrees(total)
+        # 每帧增量 + 最大角速度限制（防跳变）
+        step = totalDeg - lastDeg
+        maxStep = ROTATE_MAX_DEG_PER_FRAME
+        if step > maxStep: step = maxStep
+        if step < -maxStep: step = -maxStep
         tr = self.selected.transform
         rot = np.asarray(tr.rotation, dtype=float).copy()
         idx = {"x": 0, "y": 1, "z": 2}[axis]
-        rot[idx] += math.degrees(delta - base)
-        self._gizmoStartT = (ref, math.degrees(delta))
+        rot[idx] += step
         tr.rotation = rot
-        self._syncSelected()
-
-    def _syncSelected(self):
-        """Gizmo 改动后：触发 onSelect（联动检查器）+ 重绘。"""
-        self.renderFrame()
+        self._gizmoStartT = (ref, totalDeg)   # 记住最新总量，下一帧差值为增量
 
     def _screenRay(self, x, y):
         """视口坐标 → 世界射线 (origin, dir)；失败返回 (None, None)。"""

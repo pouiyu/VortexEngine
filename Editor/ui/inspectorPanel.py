@@ -29,6 +29,7 @@ class InspectorPanel(ttk.Frame):
         ttk.Label(self, text="检查器", padding=(6, 3)).pack(fill=tk.X)
         self.proxy = ttk.Frame(self)
         self.proxy.pack(fill=tk.BOTH, expand=True)
+        self._tfEntries = {}          # ("position"|"rotation"|"scale", i) → Entry（Gizmo 实时刷新用）
         self._buildEmpty()
 
     # ---- 显示 ----
@@ -118,6 +119,7 @@ class InspectorPanel(ttk.Frame):
         t = obj.transform
         sec = ttk.LabelFrame(self.proxy, text="Transform", padding=6)
         sec.pack(fill=tk.X, padx=6, pady=4)
+        self._tfEntries = {}
         for label, attr in (("位置", "position"), ("旋转", "rotation"), ("缩放", "scale")):
             row = ttk.Frame(sec)
             row.pack(fill=tk.X, pady=1)
@@ -131,6 +133,21 @@ class InspectorPanel(ttk.Frame):
                        lambda _ev, ee=e, tr=t, a=attr, idx=i: self._commitVec(ee, tr, a, idx))
                 e.bind("<MouseWheel>",
                        lambda ev, ee=e, tr=t, a=attr, idx=i: self._onWheel(ev, ee, tr, a, idx))
+                self._tfEntries[(attr, i)] = e
+
+    def refreshTransformValues(self, obj):
+        """Gizmo 拖动中轻量刷新：只更新 Transform 数值框文本，不重建控件。"""
+        t = obj.transform if obj is not None else None
+        if t is None or not self._tfEntries:
+            return
+        for (attr, i), e in self._tfEntries.items():
+            try:
+                val = getattr(t, attr)[i]
+            except Exception:
+                continue
+            if e.get() != f"{val:g}":
+                e.delete(0, tk.END)
+                e.insert(0, f"{val:g}")
 
     def _commitVec(self, entry, tr, attr, idx):
         """把数值框内容写回变换向量（实时提交，仅重绘不重建控件）。"""

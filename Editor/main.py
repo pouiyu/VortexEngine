@@ -158,8 +158,10 @@ class EditorApp:
         self.status.pack(fill=tk.X, side=tk.BOTTOM)
 
         # 工具栏
-        toolbar = Toolbar(self.root, projectName=self.projectName, onCreate=self.createObject)
+        toolbar = Toolbar(self.root, projectName=self.projectName,
+                          onCreate=self.createObject, onGizmoMode=self._onGizmoMode)
         toolbar.pack(fill=tk.X)
+        self.toolbar = toolbar
 
         # 主体：左列（层级+项目） | 视口 | 检查器
         body = ttk.Frame(self.root)
@@ -179,7 +181,8 @@ class EditorApp:
 
         self.viewport = GLViewport(body, scene=self.scene, onSelect=self._onSelect,
                                    prefs=self.prefs, projectRoot=self.projectRoot,
-                                   onTransform=self._onTransform)
+                                   onTransform=self._onTransform,
+                                   onGizmoModeChanged=self._onGizmoModeChanged)
         self.viewport.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=2)
 
         self.inspector = InspectorPanel(body, scene=self.scene,
@@ -188,10 +191,23 @@ class EditorApp:
                                         projectRoot=self.projectRoot)
         self.inspector.pack(side=tk.LEFT, fill=tk.Y)
 
-    def _onTransform(self, obj):
-        """Gizmo 变换结束（松开）：刷新检查器数值框，保持联动。"""
-        if obj is not None and self.inspector is not None:
+    def _onTransform(self, obj, live=False):
+        """Gizmo 变换联动：live=True 拖动中轻量刷新数值框；否则重建检查器。"""
+        if obj is None or self.inspector is None:
+            return
+        if live:
+            self.inspector.refreshTransformValues(obj)
+        else:
             self.inspector.showObject(obj)
+
+    def _onGizmoMode(self, mode):
+        """工具栏按钮切换 Gizmo 模式。"""
+        self.viewport.setGizmoMode(mode)
+
+    def _onGizmoModeChanged(self, mode):
+        """键盘 W/E/R 切换 Gizmo 模式后，同步工具栏按钮高亮。"""
+        if hasattr(self, "toolbar"):
+            self.toolbar.setGizmoMode(mode)
 
     def _onSelect(self, obj):
         """层级 / 视口拾取都能选中物体，三处联动（检查器 + 视口描边 + 层级高亮）。"""

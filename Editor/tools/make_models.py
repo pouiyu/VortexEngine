@@ -13,14 +13,18 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "assets" / "models"
 
 
 def _writeObj(path, vertices, normals, triangles):
-    """写 OBJ：顶点/法线/面（f 用 v//vn 索引，三角化）。"""
+    """写 OBJ：顶点/法线/面（f 用 v//vn 索引，三角化）。
+
+    注意：OBJ 索引从 1 开始，这里把 0 基的三角形索引 +1 转成 1 基，
+    否则加载端会把所有面错位引用顶点（历史上已踩过这个坑）。
+    """
     lines = ["# Vortex 引擎内置模型", f"# {path.name}"]
     for v in vertices:
         lines.append(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}")
     for n in normals:
         lines.append(f"vn {n[0]:.6f} {n[1]:.6f} {n[2]:.6f}")
     for (a, b, c) in triangles:
-        lines.append(f"f {a}//{a} {b}//{b} {c}//{c}")
+        lines.append(f"f {a + 1}//{a + 1} {b + 1}//{b + 1} {c + 1}//{c + 1}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"生成 {path}（{len(vertices)} 顶点 / {len(triangles)} 三角面）")
 
