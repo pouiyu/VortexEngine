@@ -38,10 +38,10 @@ class OrbitCamera:
         self.theta += dy * s
 
     def pan(self, dx, dy):
-        """平移视野：平移量与视距成正比，内容跟随鼠标。"""
+        """平移视野：内容跟随鼠标（拖右→内容右移、拖上→内容上移，与环绕一致）。"""
         _, right, up = self.axes()
         k = 0.0012 * self.distance * self.panSensitivity
-        self.target = self.target + right * dx * k - up * dy * k
+        self.target = self.target - right * dx * k + up * dy * k
 
     def zoom(self, step):
         """滚轮缩放，step 为滚轮增量（±120 的倍数）。"""
@@ -63,10 +63,10 @@ class OrbitCamera:
         up = np.cross(right, forward)
         return forward, right, up
 
-    def move(self, forwardAmt, rightAmt, upAmt):
-        """fly 模式平移 target（沿相机自身方向轴）。"""
+    def move(self, forwardAmt, rightAmt, upAmt, dt=1.0):
+        """fly 模式平移 target（沿相机自身方向轴）；速度恒定 3 单位/秒×dt，避免帧率抖动。"""
         forward, right, up = self.axes()
-        k = 0.05 * self.moveSpeed
+        k = 3.0 * self.moveSpeed * dt
         self.target = self.target + forward * forwardAmt * k \
             + right * rightAmt * k + up * upAmt * k
 

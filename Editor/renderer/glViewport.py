@@ -16,6 +16,7 @@
 import ctypes
 import ctypes.wintypes as wt
 import math
+import time
 import tkinter as tk
 
 import numpy as np
@@ -116,12 +117,12 @@ class GLViewport(tk.Frame):
 
         # 帧率
         self.frameCount = 0
+        self._lastTick = None
 
         self.configure(cursor="crosshair")
         self.bind("<ButtonPress-1>", self._onPressLeft)
         self.bind("<B1-Motion>", self._onDragLeft)
         self.bind("<ButtonRelease-1>", self._onReleaseLeft)
-        self.bind("<Shift-B1-Motion>", self._onDragPan)
         self.bind("<ButtonPress-2>", self._onPressMiddle)
         self.bind("<B2-Motion>", self._onMiddleMotion)
         self.bind("<ButtonRelease-2>", self._onReleaseMiddle)
@@ -170,20 +171,25 @@ class GLViewport(tk.Frame):
     def glVersion(self):
         """OpenGL 版本字符串（自检用）。
 
-        坑：新建上下文后立即取版本可能报 GL_INVALID_OPERATION(1282)；
-        先清空错误队列再查询，失败退化为 None。"""
+        WGL 嵌入下建上下文后立即查询偶发 1282 / makecurrent 失败，
+        这里清错误队列 + 重试数次，保证自检稳定。"""
         if self._ctx is None or not self._hdc:
             return None
-        if not self._opengl32.wglMakeCurrent(self._hdc, self._ctx):
-            return None
-        try:
-            from OpenGL.GL import glGetError
+        from OpenGL.GL import glGetError, glGetString
+        for _ in range(4):
+            if not self._opengl32.wglMakeCurrent(self._hdc, self._ctx):
+                time.sleep(0.03)
+                continue
             while glGetError() != 0:      # 清掉建上下文阶段残留的错误标志
                 pass
-            raw = glGetString(GL_VERSION)
-            return bytes(raw).decode("utf-8", "replace") if raw else None
-        except Exception:
-            return None
+            try:
+                raw = glGetString(GL_VERSION)
+                if raw:
+                    return bytes(raw).decode("utf-8", "replace")
+            except Exception:
+                pass
+            time.sleep(0.03)
+        return None
 
     # ---- 偏好 ----
     def applyPreferences(self, prefs):
@@ -342,8 +348,11 @@ class GLViewport(tk.Frame):
     def _tick(self):
         if not self._running:
             return
+        now = time.monotonic()
+        dt = min((now - self._lastTick) if self._lastTick else (1.0 / 60.0), 0.1)
+        self._lastTick = now
         try:
-            self._applyFlyMove()     # 浏览模式按键移动
+            self._applyFlyMove(dt)   # 浏览模式按键移动（dt 平滑，避免帧率抖动）
             self.renderFrame()
             self.frameCount += 1
         except Exception:
@@ -369,7 +378,7 @@ class GLViewport(tk.Frame):
         self._flyActive = False
         self._hideCursor(False)
 
-    def _applyFlyMove(self):
+    def _applyFlyMove(self, dt):
         """根据按下的键沿相机自身轴移动（浏览模式）。"""
         if not self._flyActive or not self._chars:
             return
@@ -377,7 +386,7 @@ class GLViewport(tk.Frame):
         rAmt = (1 if "right" in self._chars else 0) - (1 if "left" in self._chars else 0)
         uAmt = (1 if "up" in self._chars else 0) - (1 if "down" in self._chars else 0)
         if fAmt or rAmt or uAmt:
-            self.camera.move(fAmt, rAmt, uAmt)
+            self.camera.move(fAmt, rAmt, uAmt, dt)
 
     # ---- 按键 ----
     def _onKeyPress(self, event):
@@ -392,17 +401,29 @@ class GLViewport(tk.Frame):
                 self._chars.discard(action)
                 break
 
-    # ---- 左键：旋转 / 点击拾取；Shift+左键：平移 ----
+    # ---- 左键：旋转 / 平移(Shift) / 点击拾取 ----
     def _onPressLeft(self, event):
         self._pressX, self._pressY = event.x, event.y
         self._moved = False
         self.focus_set()
 
     def _onDragLeft(self, event):
+        """按住 Shift=平移视野，否则=环绕旋转（两模式共用一个 handler，
+        避免 Shift 拖动时上下两个绑定同时触发、共享增量互相清空）。"""
         if self._pressX is None:
             self._pressX, self._pressY = event.x, event.y
             return
         dx, dy = event.x - self._pressX, event.y - self._pressY
+        # Shift 状态位在 Windows tkinter 为 0x0001；平移不设死区以外的条件
+        # （纯水平/纯垂直拖动都算平移，死区统一用下方 2px 判断）
+        if event.state & 0x0001:
+            if abs(dx) < 2 and abs(dy) < 2:
+                return
+            self._moved = True
+            self._pressX, self._pressY = event.x, event.y
+            self.camera.pan(dx, dy)
+            self.renderFrame()
+            return
         if abs(dx) < 2 and abs(dy) < 2:
             return
         self._moved = True
@@ -419,18 +440,6 @@ class GLViewport(tk.Frame):
                 self.onSelect(obj)
         self._pressX = self._pressY = None
         self._moved = False
-
-    def _onDragPan(self, event):
-        """Shift+左键拖动：平移视野。"""
-        if self._pressX is None:
-            self._pressX, self._pressY = event.x, event.y
-            self._moved = True
-            return
-        dx, dy = event.x - self._pressX, event.y - self._pressY
-        self._moved = True
-        self._pressX, self._pressY = event.x, event.y
-        self.camera.pan(dx, dy)
-        self.renderFrame()
 
     def _onWheel(self, event):
         self.camera.zoom(event.delta)
