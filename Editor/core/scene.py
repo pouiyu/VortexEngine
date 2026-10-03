@@ -7,7 +7,7 @@ V2 只做「编辑器骨架」，对象系统在 V3 完善。
 - GameObject：名称 + Transform + 激活 + 子节点（为 V3 预留父子层级）
 - Scene：物体列表 + 根节点
 
-演示场景：地面网格 + 一个立方体，用于验证编辑器的层级面板与 OpenGL 视口。
+演示场景：一个立方体。地面网格是编辑器的辅助显示，不属场景（绘画逻辑见视口）。
 """
 
 import math
@@ -51,14 +51,14 @@ class Scene:
 
 
 def createDemoScene():
-    """生成演示场景：地面网格 + 立方体，用于验证视口与层级面板。"""
+    """生成演示场景：一个立方体。
+
+    地面网格是编辑器的辅助显示（始终由视口绘制），不属场景、不在层级里。"""
     scene = Scene()
-    grid = GameObject(name="地面网格", mesh="grid")
     cube = GameObject(
         name="立方体",
         transform=Transform(position=(0, 1, 0)),
         mesh="cube",
     )
-    scene.addObject(grid)
     scene.addObject(cube)
     return scene

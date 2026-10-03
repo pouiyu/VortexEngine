@@ -23,6 +23,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = "Editor"
 
+from .core.preferences import loadPreferences, savePreferences
 from .core.scene import createDemoScene
 from .renderer.glViewport import GLViewport
 from .renderer.orbitCamera import OrbitCamera
@@ -62,6 +63,7 @@ class EditorApp:
         self.projectRoot = Path(projectRoot) if projectRoot else None
         self.projectName = readProjectName(self.projectRoot) if self.projectRoot else "（未命名项目）"
         self.scene = createDemoScene()
+        self.prefs = loadPreferences()
 
         root.title(f"{APP_NAME} — {self.projectName}")
         root.geometry("1280x760")
@@ -70,8 +72,11 @@ class EditorApp:
         self._buildMenu()
         self._buildLayout()
 
+        # 快捷键：Delete 删除选中（焦点在输入框时交给输入框）
+        root.bind("<Delete>", lambda e: self.deleteSelected())
+
         # 帧率统计
-        self._frameCount = 0
+        self._lastFrames = 0
         self._lastFPS = time.monotonic()
         root.after(REFRESH_MS, self._updateFPS)
 
@@ -86,15 +91,24 @@ class EditorApp:
         mView.add_command(label="重置视角", command=self.resetCamera)
         menubar.add_cascade(label="视图", menu=mView)
 
+        mSettings = tk.Menu(menubar, tearoff=0)
+        mSettings.add_command(label="设置…", command=self.openSettings)
+        menubar.add_cascade(label="设置", menu=mSettings)
+
         mHelp = tk.Menu(menubar, tearoff=0)
         mHelp.add_command(label="关于", command=self._showAbout)
         menubar.add_cascade(label="帮助", menu=mHelp)
         self.root.config(menu=menubar)
 
     def resetCamera(self):
-        """视角重置（视图菜单）。"""
+        """视角重置（视图菜单）：保留用户设定的速度系数。"""
         if hasattr(self, "viewport"):
-            self.viewport.camera = OrbitCamera()
+            old = self.viewport.camera
+            cam = OrbitCamera()
+            cam.orbitSpeed = old.orbitSpeed
+            cam.panSensitivity = old.panSensitivity
+            cam.moveSpeed = old.moveSpeed
+            self.viewport.camera = cam
             self.viewport.renderFrame()
 
     def _showAbout(self):
@@ -124,7 +138,8 @@ class EditorApp:
         self.project = ProjectPanel(left, projectRoot=self.projectRoot)
         left.add(self.project, weight=1)
 
-        self.viewport = GLViewport(body, scene=self.scene)
+        self.viewport = GLViewport(body, scene=self.scene, onSelect=self._onSelect,
+                                   prefs=self.prefs)
         self.viewport.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=2)
 
         self.inspector = InspectorPanel(body, padding=(4, 0))
@@ -135,13 +150,45 @@ class EditorApp:
         self.status.pack(fill=tk.X, side=tk.BOTTOM)
 
     def _onSelect(self, obj):
+        """层级 / 视口拾取都能选中物体，三处联动（检查器 + 视口描边 + 层级高亮）。"""
+        if obj is None:
+            self.viewport.setSelected(None)
+            self.inspector.showObject(None)
+            return
+        self.viewport.setSelected(obj)
         self.inspector.showObject(obj)
+        self.hierarchy.selectObject(obj)
+
+    def deleteSelected(self):
+        """Delete：删除当前选中物体（焦点在输入框时交给输入框）。"""
+        focus = self.root.focus_get()
+        if isinstance(focus, (ttk.Entry, tk.Entry, tk.Text)):
+            return
+        obj = self.viewport.selected
+        if obj is None or self.scene is None:
+            return
+        if obj in self.scene.objects:
+            self.scene.objects.remove(obj)
+        self.viewport.setSelected(None)
+        self.hierarchy.refresh()
+        self.inspector.showObject(None)
+
+    # ---- 设置 ----
+    def openSettings(self):
+        from .ui.settingsDialog import SettingsDialog
+        SettingsDialog(self.root, self.prefs, onApply=self._applyPrefs)
+
+    def _applyPrefs(self, prefs):
+        """应用并保存偏好。"""
+        savePreferences(prefs)
+        self.prefs = prefs
+        self.viewport.applyPreferences(prefs)
 
     # ---- 帧率 ----
     def _updateFPS(self):
         now = time.monotonic()
-        frames = self._frameCount
-        self._frameCount = 0
+        frames = self.viewport.frameCount - self._lastFrames
+        self._lastFrames = self.viewport.frameCount
         dt = now - self._lastFPS
         self._lastFPS = now
         if dt > 0:
@@ -166,6 +213,11 @@ def selftest():
         assert isVortexProject(proj), "项目识别失败"
         assert readProjectName(proj) == "自检项目", "项目名读取失败"
 
+        # 图标文件必须存在（工具栏 PNG 按钮依赖）
+        iconsDir = Path(__file__).resolve().parent / "assets" / "icons"
+        for icon in ("cube.png", "sphere.png", "play.png"):
+            assert (iconsDir / icon).is_file(), f"缺少图标 {icon}"
+
         root = tk.Tk()
         app = EditorApp(root, projectRoot=proj)
         root.update()   # 让窗口映射，视口获得 HWND
@@ -177,11 +229,18 @@ def selftest():
                 break
             time.sleep(0.05)
         assert vp._ctx is not None, "OpenGL 上下文未创建（WGL 嵌入失败）"
+        # 上下文刚建立时立即做 GL 调用会报 1282，先让渲染循环空转几帧再取版本
+        before = vp.frameCount
+        for _ in range(5):
+            root.update()
+            time.sleep(0.05)
+        assert vp.frameCount > before, "frameCount 未递增（渲染循环未运行）"
         ver = vp.glVersion()
         assert ver, "无法读取 OpenGL 版本"
-        for _ in range(3):
-            vp.renderFrame()
-        print(f"[自检] 通过：窗口构建 / 项目识别 / WGL 上下文 / OpenGL 渲染 3 帧（{ver}）")
+        # 拾取逻辑自检：点击视口中心应命中演示立方体
+        picked = vp.pickObject(vp.winfo_width() // 2, vp.winfo_height() // 2)
+        assert picked is not None, "视口中心拾取未命中物体"
+        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染循环 / 拾取 / 图标（{ver}）")
         vp.dispose()
         root.destroy()
     return 0

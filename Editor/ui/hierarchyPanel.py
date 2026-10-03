@@ -45,3 +45,14 @@ class HierarchyPanel(tk.Frame):
         self.selected = obj
         if self.onSelect:
             self.onSelect(obj)
+
+    def selectObject(self, obj):
+        """外部（如视口拾取）设置选中，联动高亮层级项。
+        已选中则跳过 selection_set（防止再次触发 TreeviewSelect 事件风暴）。"""
+        for oid, o in self._idToObj.items():
+            if o is obj:
+                cur = self.tree.selection()
+                if len(cur) == 1 and self._idToObj.get(cur[0]) is obj:
+                    return
+                self.tree.selection_set(oid)
+                return
