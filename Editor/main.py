@@ -26,8 +26,9 @@ if __package__ in (None, ""):
     __package__ = "Editor"
 
 from .core.preferences import loadPreferences, savePreferences
-from .core.scene import GameObject, MeshRenderer, createDemoScene, worldMatrix
+from .core.scene import GameObject, Light, MeshRenderer, createDemoScene, worldMatrix
 from .core.serializer import loadSceneFile, saveSceneFile
+from .core.meshCache import importModel as importModelFile
 from .renderer.glViewport import GLViewport
 from .renderer.orbitCamera import OrbitCamera
 from .ui.hierarchyPanel import HierarchyPanel
@@ -43,6 +44,20 @@ REFRESH_MS = 500  # 状态栏 FPS 刷新间隔
 def isVortexProject(path):
     """判断是否为有效的 Vortex 项目（含 Engine/engineData.ved）。"""
     return (Path(path) / "Engine" / "engineData.ved").is_file()
+
+
+def _goWith(mesh, color, name=None):
+    """带网格渲染器的物体（创建列表辅助）。"""
+    go = GameObject(name=name or ("立方体" if mesh == "cube" else "球体"))
+    go.addComponent(MeshRenderer(mesh=mesh, color=color))
+    return go
+
+
+def _goLight(lightType, color, intensity, name=None):
+    """带光照组件的物体（创建列表辅助）。"""
+    go = GameObject(name=name or ("方向光" if lightType == "directional" else "点光源"))
+    go.addComponent(Light(lightType=lightType, color=color, intensity=intensity))
+    return go
 
 
 def readProjectName(projectRoot):
@@ -138,6 +153,10 @@ class EditorApp:
 
     # ---- 布局 ----
     def _buildLayout(self):
+        # 状态栏（提前创建，供项目面板/其它回调显示消息）
+        self.status = StatusBar(self.root, projectPath=str(self.projectRoot) if self.projectRoot else "")
+        self.status.pack(fill=tk.X, side=tk.BOTTOM)
+
         # 工具栏
         toolbar = Toolbar(self.root, projectName=self.projectName, onCreate=self.createObject)
         toolbar.pack(fill=tk.X)
@@ -152,21 +171,27 @@ class EditorApp:
         self.hierarchy = HierarchyPanel(left, scene=self.scene, onSelect=self._onSelect)
         left.add(self.hierarchy, weight=2)
 
-        self.project = ProjectPanel(left, projectRoot=self.projectRoot)
+        self.project = ProjectPanel(left, projectRoot=self.projectRoot,
+                                    onStatus=self.status.showMessage if hasattr(self, "status") else None,
+                                    onImport=self._onModelImported,
+                                    onUseMesh=self._onUseMesh)
         left.add(self.project, weight=1)
 
         self.viewport = GLViewport(body, scene=self.scene, onSelect=self._onSelect,
-                                   prefs=self.prefs)
+                                   prefs=self.prefs, projectRoot=self.projectRoot,
+                                   onTransform=self._onTransform)
         self.viewport.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=2)
 
         self.inspector = InspectorPanel(body, scene=self.scene,
                                         onValue=self._onValue,
-                                        onStructure=self._onStructure)
+                                        onStructure=self._onStructure,
+                                        projectRoot=self.projectRoot)
         self.inspector.pack(side=tk.LEFT, fill=tk.Y)
 
-        # 状态栏
-        self.status = StatusBar(self.root, projectPath=str(self.projectRoot) if self.projectRoot else "")
-        self.status.pack(fill=tk.X, side=tk.BOTTOM)
+    def _onTransform(self, obj):
+        """Gizmo 变换结束（松开）：刷新检查器数值框，保持联动。"""
+        if obj is not None and self.inspector is not None:
+            self.inspector.showObject(obj)
 
     def _onSelect(self, obj):
         """层级 / 视口拾取都能选中物体，三处联动（检查器 + 视口描边 + 层级高亮）。"""
@@ -248,16 +273,24 @@ class EditorApp:
         self.status.showMessage(f"已打开 {path.name}")
 
     # ---- 创建物体 ----
+    CREATE_OPTIONS = {
+        "empty": ("空物体", lambda: GameObject(name="空物体")),
+        "cube": ("立方体", lambda: _goWith("cube", [0.35, 0.55, 0.85])),
+        "sphere": ("球体", lambda: _goWith("sphere", [0.55, 0.35, 0.75])),
+        "directional": ("方向光", lambda: _goLight("directional", [1.0, 1.0, 0.95], 1.0)),
+        "point": ("点光源", lambda: _goLight("point", [1.0, 0.9, 0.7], 1.2)),
+    }
+
     def createObject(self, kind):
-        """工具栏创建物体：empty / cube / sphere，新物体错位摆放（避免堆原点）。"""
-        if kind == "cube":
-            go = GameObject(name="立方体")
-            go.addComponent(MeshRenderer(mesh="cube", color=[0.35, 0.55, 0.85]))
-        elif kind == "sphere":
-            go = GameObject(name="球体")
-            go.addComponent(MeshRenderer(mesh="sphere", color=[0.55, 0.35, 0.75]))
-        else:
-            go = GameObject(name="空物体")
+        """创建物体（工具栏选择列表）：空物体 / 立方体 / 球体 / 方向光 / 点光源。"""
+        maker = self.CREATE_OPTIONS.get(kind)
+        if maker is None:
+            self.status.showMessage(f"未知的创建类型：{kind}")
+            return
+        go = maker[1]()
+        # 方向光沿 -Y 下照（旋转 45,-30 更像午后斜光）
+        if kind == "directional":
+            go.transform.rotation = np.array([45.0, -30.0, 0.0])
         n = len(self.scene.objects)
         go.transform.position = np.array([(n % 5) * 1.5, 0.75, (n // 5) * 1.5])
         self.scene.addObject(go)
@@ -265,6 +298,41 @@ class EditorApp:
         self.hierarchy.refresh()
         self.hierarchy.selectObject(go)
         self.viewport.renderFrame()
+        self.status.showMessage(f"已创建「{go.name}」")
+
+    def importModel(self, path):
+        """导入 .obj 到项目 Resources/Models，刷新项目面板与网格下拉。"""
+        try:
+            rel = importModelFile(path, self.projectRoot)
+        except (OSError, ValueError) as e:
+            messagebox.showerror(APP_NAME, f"导入失败：{e}")
+            return
+        self.project.refresh()
+        self.status.showMessage(f"已导入模型 {rel}")
+
+    def _onModelImported(self, rel):
+        """导入完成：刷新检查器网格下拉（若选中物体在编辑网格）。"""
+        if self.inspector is not None:
+            self.inspector.refreshMeshOptions()
+
+    def _onUseMesh(self, rel):
+        """项目面板双击 .obj：给选中物体换网格；无选中则创建新物体。"""
+        if self.selected is not None and self.selected.getComponent(MeshRenderer) is not None:
+            mr = self.selected.getComponent(MeshRenderer)
+            mr.mesh = rel
+            self.viewport.renderFrame()
+            self.status.showMessage(f"已把「{self.selected.name}」的网格设为 {rel}")
+            return
+        go = GameObject(name=Path(rel).stem)
+        go.addComponent(MeshRenderer(mesh=rel, color=[0.60, 0.65, 0.70]))
+        n = len(self.scene.objects)
+        go.transform.position = np.array([(n % 5) * 1.5, 0.75, (n // 5) * 1.5])
+        self.scene.addObject(go)
+        self._onSelect(go)
+        self.hierarchy.refresh()
+        self.hierarchy.selectObject(go)
+        self.viewport.renderFrame()
+        self.status.showMessage(f"已创建物体（模型 {rel}）")
 
     # ---- 设置 ----
     def openSettings(self):
@@ -290,9 +358,10 @@ class EditorApp:
 
 
 def _testDataLayer():
-    """无窗口数据层自检：组件 / 父子 / 世界矩阵 / 序列化往返。"""
+    """无窗口数据层自检：组件 / 父子 / 世界矩阵 / 序列化往返 / 内置网格。"""
     from .core.scene import Scene
     from .core.serializer import deserializeScene, serializeScene
+    from .core.meshCache import getMesh
 
     scene = Scene()
     parent = GameObject(name="父")
@@ -300,26 +369,33 @@ def _testDataLayer():
     child.transform.position = np.array([1.0, 2.0, 3.0])
     child.transform.rotation = np.array([0.0, 90.0, 0.0])
     child.addComponent(MeshRenderer(mesh="sphere", color=[1.0, 0.5, 0.25]))
+    sun = GameObject(name="方向光")
+    sun.addComponent(Light(lightType="directional", color=[1.0, 1.0, 0.9], intensity=1.5))
     scene.addObject(parent)
     scene.addObject(child)
+    scene.addObject(sun)
     scene.setParent(child, parent)
     assert child.parent is parent and parent.children == [child], "setParent 失败"
     # 世界矩阵：子平移应叠加父平移
     parent.transform.position = np.array([10.0, 0.0, 0.0])
     m = worldMatrix(child)
     assert abs(m[0, 3] - 11.0) < 1e-6 and abs(m[1, 3] - 2.0) < 1e-6, "worldMatrix 未叠加父链"
-    # 序列化往返
+    # 序列化往返（含 Light 组件）
     data = serializeScene(scene)
     restored = deserializeScene(data)
-    assert len(restored.objects) == 2, "反序列化物体数不符"
+    assert len(restored.objects) == 3, "反序列化物体数不符"
     rp = restored.findByUuid(parent.uuid)
     rc = restored.findByUuid(child.uuid)
-    assert rp is not None and rc is not None, "uuid 未保留"
+    rs = restored.findByUuid(sun.uuid)
+    assert rp is not None and rc is not None and rs is not None, "uuid 未保留"
     assert rc.parent is rp, "父子引用未恢复"
     assert rc.name == "子" and rc.active is True, "字段未恢复"
     assert abs(rc.transform.position[1] - 2.0) < 1e-9, "Transform 未恢复"
     mr = rc.getComponent(MeshRenderer)
     assert mr is not None and mr.mesh == "sphere", "MeshRenderer 未恢复"
+    rl = rs.getComponent(Light)
+    assert rl is not None and rl.lightType == "directional", "Light 未恢复"
+    assert abs(rl.intensity - 1.5) < 1e-9 and abs(rl.color[2] - 0.9) < 1e-9, "Light 字段未恢复"
     # 组件增删（Transform 不可移除）
     assert parent.getComponent(MeshRenderer) is None
     parent.addComponent(MeshRenderer(mesh="cube"))
@@ -327,7 +403,13 @@ def _testDataLayer():
     assert parent.removeComponent(parent.getComponent(MeshRenderer)), "移除组件失败"
     assert parent.getComponent(MeshRenderer) is None
     assert not parent.removeComponent(parent.transform), "Transform 不应可移除"
-    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返")
+    # 内置 .obj 网格加载（cube / sphere 都必须可解析且有三角面）
+    for meshName in ("cube", "sphere"):
+        data = getMesh(meshName)
+        assert data is not None, f"内置网格 {meshName} 加载失败"
+        assert len(data.indices) > 0 and len(data.indices) % 3 == 0, f"{meshName} 无三角面"
+        assert data.vertices.shape[1] == 3 and data.normals.shape[1] == 3, f"{meshName} 顶点/法线维数错误"
+    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返 / 内置网格")
 
 
 def selftest():
@@ -348,10 +430,10 @@ def selftest():
         assert isVortexProject(proj), "项目识别失败"
         assert readProjectName(proj) == "自检项目", "项目名读取失败"
 
-        # 图标文件必须存在（工具栏 PNG 按钮依赖）
-        iconsDir = Path(__file__).resolve().parent / "assets" / "icons"
-        for icon in ("cube.png", "sphere.png", "play.png"):
-            assert (iconsDir / icon).is_file(), f"缺少图标 {icon}"
+        # 内置 .obj 模型文件必须存在（创建/渲染依赖）
+        modelsDir = Path(__file__).resolve().parent / "assets" / "models"
+        for model in ("cube.obj", "sphere.obj"):
+            assert (modelsDir / model).is_file(), f"缺少内置模型 {model}"
 
         root = tk.Tk()
         app = EditorApp(root, projectRoot=proj)

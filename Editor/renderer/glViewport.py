@@ -21,15 +21,28 @@ import tkinter as tk
 
 import numpy as np
 
-from OpenGL.GL import (GL_BLEND, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT,
-                       GL_DEPTH_TEST, GL_LEQUAL, GL_LINES, GL_MODELVIEW,
-                       GL_ONE_MINUS_SRC_ALPHA, GL_PROJECTION, GL_QUADS,
-                       GL_SRC_ALPHA, GL_VERSION,
+from OpenGL.GL import (GL_AMBIENT, GL_AMBIENT_AND_DIFFUSE, GL_BLEND,
+                       GL_COLOR_BUFFER_BIT, GL_CONSTANT_ATTENUATION,
+                       GL_DEPTH_BUFFER_BIT, GL_DEPTH_TEST,
+                       GL_DIFFUSE, GL_FLOAT, GL_FRONT_AND_BACK, GL_LEQUAL,
+                       GL_LIGHT0, GL_LIGHT_MODEL_AMBIENT,
+                       GL_LIGHTING, GL_LINEAR_ATTENUATION, GL_LINE_LOOP, GL_LINES,
+                       GL_MODELVIEW,
+                       GL_MODELVIEW_MATRIX,
+                       GL_NORMAL_ARRAY, GL_ONE_MINUS_SRC_ALPHA, GL_POSITION,
+                       GL_PROJECTION, GL_PROJECTION_MATRIX, GL_QUADRATIC_ATTENUATION,
+                       GL_QUADS, GL_SHININESS, GL_SPECULAR,
+                       GL_SRC_ALPHA, GL_TRIANGLES, GL_UNSIGNED_INT, GL_VERTEX_ARRAY,
+                       GL_VERSION,
                        glBegin, glBlendFunc, glClear, glClearColor, glColor3f,
-                       glColor4f, glDepthFunc, glDisable, glEnable, glEnd,
-                       glGetString, glLineWidth, glLoadIdentity, glMatrixMode,
-                       glMultMatrixf, glPopMatrix, glPushMatrix, glTranslatef,
-                       glVertex3f, glViewport)
+                       glColor4f, glDepthFunc, glDisable, glDisableClientState,
+                       glDrawElements,
+                       glEnable, glEnableClientState, glEnd, glGetFloatv, glGetString,
+                       glLightModelfv, glLightfv, glLightf, glLineWidth, glLoadIdentity,
+                       glMaterialfv, glMaterialf, glMatrixMode, glMultMatrixf,
+                       glNormalPointer,
+                       glPopMatrix, glPushMatrix, glTranslatef, glVertex3f,
+                       glVertexPointer, glViewport)
 from OpenGL.GLU import gluLookAt, gluPerspective
 
 # WGL 嵌入 tkinter 时，窗口重绘/交换缓冲与异步查询交错的时机，
@@ -47,7 +60,8 @@ except Exception:
     pass
 
 from .orbitCamera import OrbitCamera
-from ..core.scene import MeshRenderer, worldMatrix
+from ..core.scene import Light, MeshRenderer, worldMatrix
+from ..core.meshCache import getMesh
 
 # ---- Win32 / WGL 常量 ----
 GCL_STYLE = -16
@@ -89,16 +103,25 @@ class _PIXELFORMATDESCRIPTOR(ctypes.Structure):
 class GLViewport(tk.Frame):
     """嵌入 tkinter 的 OpenGL 3D 视口。"""
 
-    def __init__(self, master, scene=None, onSelect=None, prefs=None, **kw):
+    def __init__(self, master, scene=None, onSelect=None, prefs=None, projectRoot=None,
+                 onTransform=None, **kw):
         kw.setdefault("background", "#1e1e22")
         super().__init__(master, **kw)
         self.scene = scene
         self.onSelect = onSelect          # 拾取选中回调（main 提供）
+        self.onTransform = onTransform    # Gizmo 变换结束回调（刷新检查器）
         self.selected = None              # 当前选中物体（黄色描边）
+        self.projectRoot = projectRoot    # 项目根（解析 Resources 下 .obj 用）
         self.camera = OrbitCamera()
         self.keyBinds = dict(DEFAULT_KEYS)
         if prefs:
             self.applyPreferences(prefs)
+
+        # Gizmo 状态
+        self.gizmoMode = "move"           # "move" / "rotate" / "scale"
+        self._gizmoDrag = None            # 当前拖拽的轴（"x"/"y"/"z"/"plane"）
+        self._gizmoStart = None           # 拖拽起始参考点（世界坐标）
+        self._gizmoStartT = None          # 拖拽起始参数（t / (ref, base)）
 
         # Win32 动态库
         self._gdi32 = ctypes.WinDLL("gdi32.dll")
@@ -284,8 +307,204 @@ class GLViewport(tk.Frame):
         glDepthFunc(GL_LEQUAL)
         self._setupView()
         self._drawGrid()
+        self._setupLights()
         self._drawScene()
+        self._drawGizmo()
         self._gdi32.SwapBuffers(self._hdc)
+
+    def _setupLights(self):
+        """把场景中的 Light 组件映射到固定管线光照（GL_LIGHT0..N）。
+
+        - 方向光：方向取灯光物体世界旋转的 -Z（朝向光照射方向），位置 w=0
+        - 点光源：世界位置 + 衰减，位置 w=1
+        最多启用 4 盏（超出忽略）；环境光常量淡蓝灰。
+        """
+        glEnable(GL_LIGHTING)
+        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.18, 0.18, 0.22, 1.0])
+        lights = []
+        for obj in (self.scene.objects if self.scene else []):
+            if not obj.active:
+                continue
+            lt = obj.getComponent(Light)
+            if lt is None:
+                continue
+            m = worldMatrix(obj)
+            pos = m[:3, 3]
+            # 灯光物体世界旋转的 -Z 轴 = 光照射方向
+            fwd = -(m[:3, :3] @ np.array([0.0, 0.0, 1.0]))
+            color = np.array(lt.color, dtype=float) * lt.intensity
+            lights.append((lt.lightType, pos, fwd, color))
+        for i, (ltype, pos, fwd, color) in enumerate(lights[:4]):
+            lightId = GL_LIGHT0 + i
+            glEnable(lightId)
+            if ltype == "point":
+                glLightfv(lightId, GL_POSITION, [pos[0], pos[1], pos[2], 1.0])
+                glLightf(lightId, GL_CONSTANT_ATTENUATION, 1.0)
+                glLightf(lightId, GL_LINEAR_ATTENUATION, 0.05)
+                glLightf(lightId, GL_QUADRATIC_ATTENUATION, 0.02)
+            else:   # directional
+                glLightfv(lightId, GL_POSITION, [fwd[0], fwd[1], fwd[2], 0.0])
+            glLightfv(lightId, GL_DIFFUSE, [color[0], color[1], color[2], 1.0])
+            glLightfv(lightId, GL_SPECULAR, [color[0], color[1], color[2], 1.0])
+            glLightfv(lightId, GL_AMBIENT, [0.0, 0.0, 0.0, 1.0])
+        for i in range(len(lights), 4):
+            glDisable(GL_LIGHT0 + i)
+
+    def _drawScene(self):
+        """绘制场景物体（世界矩阵 + MeshRenderer 组件）；选中物体叠加黄色描边。
+
+        mesh 键经 meshCache 解析为 MeshData，用顶点数组 + glDrawElements 绘制；
+        光照开启时用材质色代替 glColor（固定管线）。"""
+        for obj in (self.scene.objects if self.scene else []):
+            if not obj.active:
+                continue
+            mr = obj.getComponent(MeshRenderer)
+            if mr is None or not mr.mesh:
+                continue
+            data = getMesh(mr.mesh, self.projectRoot)
+            if data is None:
+                continue
+            glPushMatrix()
+            glMultMatrixf(worldMatrix(obj).T.flatten())   # 列优先传给 GL（含父子链）
+            glEnableClientState(GL_VERTEX_ARRAY)
+            glEnableClientState(GL_NORMAL_ARRAY)
+            glVertexPointer(3, GL_FLOAT, 0, data.vertices)
+            glNormalPointer(GL_FLOAT, 0, data.normals)
+            glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE,
+                         [mr.color[0], mr.color[1], mr.color[2], 1.0])
+            glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [0.35, 0.35, 0.35, 1.0])
+            glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 32.0)
+            glDrawElements(GL_TRIANGLES, len(data.indices), GL_UNSIGNED_INT, data.indices)
+            glDisableClientState(GL_NORMAL_ARRAY)
+            glDisableClientState(GL_VERTEX_ARRAY)
+            if obj is self.selected:
+                self._drawOutline(data)
+            glPopMatrix()
+
+    def _drawOutline(self, data):
+        """选中物体黄色描边（基于网格实际边，轻微放大避免深度冲突）。"""
+        edges = data.edges()
+        glDisable(GL_LIGHTING)
+        glLineWidth(3.0)
+        glColor3f(1.0, 0.85, 0.20)
+        glBegin(GL_LINES)
+        for a, b in edges:
+            glVertex3f(a[0] * 1.02, a[1] * 1.02, a[2] * 1.02)
+            glVertex3f(b[0] * 1.02, b[1] * 1.02, b[2] * 1.02)
+        glEnd()
+        glLineWidth(1.0)
+        glEnable(GL_LIGHTING)
+
+    # ---- 变换 Gizmo ----
+    GIZMO_COLORS = {
+        "x": (0.85, 0.25, 0.25),
+        "y": (0.25, 0.75, 0.35),
+        "z": (0.25, 0.45, 0.85),
+    }
+
+    def _gizmoOrigin(self):
+        """Gizmo 世界位置：选中物体世界原点（无选中返回 None）。"""
+        if self.selected is None:
+            return None
+        return worldMatrix(self.selected)[:3, 3]
+
+    def _drawGizmo(self):
+        """绘制选中物体的变换 Gizmo（move=三轴箭头 / rotate=圆环 / scale=轴+方块）。"""
+        if self.selected is None:
+            return
+        origin = self._gizmoOrigin()
+        if origin is None:
+            return
+        glDisable(GL_LIGHTING)
+        glDisable(GL_DEPTH_TEST)   # Gizmo 始终可见（不穿模）
+        size = self._gizmoSize(origin)
+        glLineWidth(2.0)
+        if self.gizmoMode == "rotate":
+            self._drawRotateGizmo(origin, size)
+        elif self.gizmoMode == "scale":
+            self._drawScaleGizmo(origin, size)
+        else:
+            self._drawMoveGizmo(origin, size)
+        glLineWidth(1.0)
+        glEnable(GL_DEPTH_TEST)
+        glEnable(GL_LIGHTING)
+
+    def _gizmoSize(self, origin):
+        """Gizmo 尺寸：按到相机距离缩放，保证屏幕上近似恒定大小。"""
+        eye = self.camera.eye()
+        dist = max(float(np.linalg.norm(origin - eye)), 1e-6)
+        return max(0.5, dist * 0.18)
+
+    def _drawMoveGizmo(self, origin, size):
+        """移动模式：三轴箭头（杆 + 锥头）。"""
+        for axis, color in self.GIZMO_COLORS.items():
+            d = self._axisVec(axis)
+            glColor3f(*color)
+            glBegin(GL_LINES)
+            glVertex3f(*origin); glVertex3f(*(origin + d * size))
+            glEnd()
+            self._drawCone(origin + d * size, d, size * 0.22, color)
+
+    def _drawScaleGizmo(self, origin, size):
+        """缩放模式：三轴杆 + 末端小方块。"""
+        for axis, color in self.GIZMO_COLORS.items():
+            d = self._axisVec(axis)
+            glColor3f(*color)
+            glBegin(GL_LINES)
+            glVertex3f(*origin); glVertex3f(*(origin + d * size))
+            glEnd()
+            self._drawCubeHandle(origin + d * size, size * 0.14, color)
+
+    def _drawRotateGizmo(self, origin, size):
+        """旋转模式：XY / XZ / YZ 三色圆环（按轴向）。"""
+        seg = 48
+        for axis, color in self.GIZMO_COLORS.items():
+            glColor3f(*color)
+            glBegin(GL_LINE_LOOP)
+            for i in range(seg):
+                ang = 2.0 * math.pi * i / seg
+                v = np.array([math.cos(ang), math.sin(ang), 0.0]) * size
+                if axis == "x":
+                    v = np.array([0.0, v[0], v[1]])
+                elif axis == "y":
+                    v = np.array([v[0], 0.0, v[1]])
+                glVertex3f(*(origin + v))
+            glEnd()
+
+    def _axisVec(self, axis):
+        """世界轴单位向量。"""
+        return {"x": np.array([1.0, 0.0, 0.0]),
+                "y": np.array([0.0, 1.0, 0.0]),
+                "z": np.array([0.0, 0.0, 1.0])}[axis]
+
+    @staticmethod
+    def _drawCone(tip, direction, length, color):
+        """小锥体箭头（朝 direction，基座在 tip 的 -direction 方向）。"""
+        glColor3f(*color)
+        seg = 10
+        side = np.cross(direction, np.array([0.0, 1.0, 0.0]))
+        if np.linalg.norm(side) < 1e-6:
+            side = np.cross(direction, np.array([1.0, 0.0, 0.0]))
+        side = side / np.linalg.norm(side)
+        base = tip - direction * length
+        glBegin(GL_TRIANGLES)
+        for i in range(seg):
+            a = base + side * (length * 0.4) * math.cos(2 * math.pi * i / seg) \
+                + np.cross(direction, side) * (length * 0.4) * math.sin(2 * math.pi * i / seg)
+            b = base + side * (length * 0.4) * math.cos(2 * math.pi * (i + 1) / seg) \
+                + np.cross(direction, side) * (length * 0.4) * math.sin(2 * math.pi * (i + 1) / seg)
+            glVertex3f(*tip); glVertex3f(*a); glVertex3f(*b)
+        glEnd()
+
+    @staticmethod
+    def _drawCubeHandle(center, half, color):
+        """Gizmo 末端小方块（缩放模式手柄）。"""
+        glColor3f(*color)
+        glBegin(GL_QUADS)
+        for quad in _CUBE_QUADS:
+            for v in quad:
+                glVertex3f(center[0] + v[0] * half, center[1] + v[1] * half, center[2] + v[2] * half)
+        glEnd()
 
     def _drawGrid(self):
         """地面网格：网格线锚定在世界整数坐标上（平移/浏览时随世界一起移动，
@@ -323,67 +542,6 @@ class GLViewport(tk.Frame):
         glColor4f(0.25, 0.45, 0.85, 1.0); glVertex3f(0, 0.02, 0); glVertex3f(0, 0.02, L)
         glEnd()
         glDisable(GL_BLEND)
-
-    def _drawScene(self):
-        """绘制场景物体（世界矩阵 + MeshRenderer 组件）；选中物体叠加黄色描边。"""
-        for obj in (self.scene.objects if self.scene else []):
-            if not obj.active:
-                continue
-            mr = obj.getComponent(MeshRenderer)
-            if mr is None or not mr.mesh:
-                continue
-            glPushMatrix()
-            glMultMatrixf(worldMatrix(obj).T.flatten())   # 列优先传给 GL（含父子链）
-            color = tuple(mr.color)
-            if mr.mesh == "cube":
-                self._drawCubeUnit(color)
-            elif mr.mesh == "sphere":
-                self._drawSphereUnit(color)
-            if obj is self.selected:
-                self._drawOutline(mr.mesh)
-            glPopMatrix()
-
-    @staticmethod
-    def _drawCubeUnit(color):
-        """单位立方体（边长 2，中心在原点），用组件颜色 + 深色描边。"""
-        glColor3f(*color)
-        glBegin(GL_QUADS)
-        for quad in _CUBE_QUADS:
-            for v in quad:
-                glVertex3f(*v)
-        glEnd()
-        glColor3f(0.10, 0.12, 0.15)
-        glBegin(GL_LINES)
-        for a, b in _CUBE_EDGES:
-            glVertex3f(*a); glVertex3f(*b)
-        glEnd()
-
-    @staticmethod
-    def _drawSphereUnit(color):
-        """单位球体（半径 1，经纬网格），用组件颜色 + 深色描边。"""
-        glColor3f(*color)
-        glBegin(GL_QUADS)
-        for quad in _SPHERE_QUADS:
-            for v in quad:
-                glVertex3f(*v)
-        glEnd()
-        glColor3f(0.10, 0.12, 0.15)
-        glBegin(GL_LINES)
-        for a, b in _SPHERE_EDGES:
-            glVertex3f(*a); glVertex3f(*b)
-        glEnd()
-
-    def _drawOutline(self, mesh):
-        """选中物体黄色描边（单位几何放大 1.02，已随物体世界矩阵变换）。"""
-        edges = _CUBE_EDGES if mesh == "cube" else _SPHERE_EDGES
-        glLineWidth(3.0)
-        glColor3f(1.0, 0.85, 0.20)
-        glBegin(GL_LINES)
-        for a, b in edges:
-            glVertex3f(a[0] * 1.02, a[1] * 1.02, a[2] * 1.02)
-            glVertex3f(b[0] * 1.02, b[1] * 1.02, b[2] * 1.02)
-        glEnd()
-        glLineWidth(1.0)
 
     # ---- 拾取 ----
     def pickObject(self, x, y):
@@ -490,6 +648,21 @@ class GLViewport(tk.Frame):
 
     # ---- 按键 ----
     def _onKeyPress(self, event):
+        # W/E/R 切换 Gizmo 模式（浏览模式激活时交给 WASD 移动）
+        if not self._flyActive:
+            k = event.keysym.lower()
+            if k == "w":
+                self.gizmoMode = "move"
+                self.renderFrame()
+                return
+            if k == "e":
+                self.gizmoMode = "rotate"
+                self.renderFrame()
+                return
+            if k == "r":
+                self.gizmoMode = "scale"
+                self.renderFrame()
+                return
         for action, key in self.keyBinds.items():
             if event.keysym.lower() == key.lower():
                 self._chars.add(action)
@@ -501,27 +674,41 @@ class GLViewport(tk.Frame):
                 self._chars.discard(action)
                 break
 
-    # ---- 左键：旋转 / 平移(Shift) / 点击拾取 ----
+    # ---- 左键：旋转 / 平移(Shift) / Gizmo / 点击拾取 ----
     def _onPressLeft(self, event):
         self._pressX, self._pressY = event.x, event.y
         self._moved = False
         self.focus_set()
+        # 先检测 Gizmo 命中（选中物体且非 Shift）
+        if not (event.state & 0x0001):
+            axis = self._pickGizmo(event.x, event.y)
+            if axis is not None:
+                self._gizmoDrag = axis
+                self._gizmoStart = self._gizmoOrigin()
+                # move/scale 记录起始屏幕点（增量按屏幕投影换算）；
+                # rotate 首帧由 _dragRotate 初始化参考平面点
+                self._gizmoStartT = None if self.gizmoMode == "rotate" else (event.x, event.y)
+                self._moved = True   # 视为拖拽，不触发拾取
 
     def _onDragLeft(self, event):
-        """按住 Shift=平移视野，否则=环绕旋转（两模式共用一个 handler，
-        避免 Shift 拖动时上下两个绑定同时触发、共享增量互相清空）。"""
+        """按住 Shift=平移视野；命中 Gizmo=变换物体；否则=环绕旋转。"""
         if self._pressX is None:
             self._pressX, self._pressY = event.x, event.y
             return
         dx, dy = event.x - self._pressX, event.y - self._pressY
         # Shift 状态位在 Windows tkinter 为 0x0001；平移不设死区以外的条件
-        # （纯水平/纯垂直拖动都算平移，死区统一用下方 2px 判断）
         if event.state & 0x0001:
             if abs(dx) < 2 and abs(dy) < 2:
                 return
             self._moved = True
             self._pressX, self._pressY = event.x, event.y
             self.camera.pan(dx, dy)
+            return
+        if self._gizmoDrag is not None:
+            # Gizmo 拖拽：按轴变换选中物体
+            self._moved = True
+            self._pressX, self._pressY = event.x, event.y
+            self._dragGizmo(event.x, event.y)
             return
         if abs(dx) < 2 and abs(dy) < 2:
             return
@@ -536,8 +723,153 @@ class GLViewport(tk.Frame):
             self.selected = obj
             if self.onSelect:
                 self.onSelect(obj)
+        wasGizmo = self._gizmoDrag is not None
         self._pressX = self._pressY = None
         self._moved = False
+        self._gizmoDrag = None
+        self._gizmoStart = None
+        self._gizmoStartT = None
+        if wasGizmo and self.onTransform:
+            # Gizmo 变换结束：刷新检查器数值框
+            self.onTransform(self.selected)
+
+    # ---- Gizmo 拾取与拖拽 ----
+    def _pickGizmo(self, x, y):
+        """返回命中的 Gizmo 手柄（"x"/"y"/"z" 或 None）。阈值 = 屏幕 10px。"""
+        if self.selected is None:
+            return None
+        origin = self._gizmoOrigin()
+        if origin is None:
+            return None
+        size = self._gizmoSize(origin)
+        tol = 10.0
+        best, bestD = None, tol
+        for axis in ("x", "y", "z"):
+            p = origin + self._axisVec(axis) * size
+            sp = self._project(p)
+            so = self._project(origin)
+            if sp is None or so is None:
+                continue
+            d = _pointSegDist(x, y, so, sp)
+            if d < bestD:
+                best, bestD = axis, d
+        return best
+
+    def _dragGizmo(self, x, y):
+        """按当前 Gizmo 模式变换选中物体。"""
+        if self.selected is None or self._gizmoStart is None:
+            return
+        origin = self._gizmoStart
+        axis = self._gizmoDrag
+        size = self._gizmoSize(origin)
+        if self.gizmoMode == "rotate":
+            self._dragRotate(x, y, origin, axis)
+        elif self.gizmoMode == "scale":
+            self._dragScale(x, y, origin, axis, size)
+        else:
+            self._dragMove(x, y, origin, axis)
+        self.renderFrame()   # 拖动中仅重绘（避免每帧重建检查器）
+
+    def _dragMove(self, x, y, origin, axis):
+        """移动：鼠标屏幕位移投影到轴的屏幕方向 → 沿轴位移（方向与视觉一致）。"""
+        delta = self._screenAxisDelta(x, y, origin, axis)
+        tr = self.selected.transform
+        tr.position = np.asarray(tr.position, dtype=float) + self._axisVec(axis) * delta
+        self._syncSelected()
+
+    def _dragScale(self, x, y, origin, axis, size):
+        """缩放：屏幕位移投影到轴 → 仅该轴缩放（非等比，每轴独立）。"""
+        delta = self._screenAxisDelta(x, y, origin, axis)
+        factor = 1.0 + delta / max(size, 1e-6)
+        tr = self.selected.transform
+        sc = np.asarray(tr.scale, dtype=float).copy()
+        idx = {"x": 0, "y": 1, "z": 2}[axis]
+        sc[idx] = max(sc[idx] * factor, 0.05)
+        tr.scale = sc
+        self._syncSelected()
+
+    def _screenAxisDelta(self, x, y, origin, axis):
+        """鼠标从起始点的屏幕位移 → 沿该轴的位移量（世界单位）。
+
+        把轴线段两端投影到屏幕，得到「轴上 1 世界单位 = 多少像素」的换算
+        与轴屏幕方向；鼠标位移在轴方向上的投影 ÷ 换算系数 = 世界位移。
+        方向天然与视觉一致（沿屏幕上看到的轴方向拖动 = 物体沿轴移动）。"""
+        sx, sy = self._gizmoStartT if isinstance(self._gizmoStartT, tuple) else (x, y)
+        p0 = self._project(origin)
+        p1 = self._project(origin + self._axisVec(axis) * self._gizmoSize(origin))
+        if p0 is None or p1 is None:
+            return 0.0
+        ax, ay = p1[0] - p0[0], p1[1] - p0[1]
+        length = math.hypot(ax, ay)
+        if length < 1e-6:
+            return 0.0
+        proj = ((x - sx) * ax + (y - sy) * ay) / length   # 像素位移沿轴投影
+        size = self._gizmoSize(origin)
+        return proj * (size / length)                     # 像素 → 世界单位
+
+    def _dragRotate(self, x, y, origin, axis):
+        """旋转：射线与过原点、法线为轴的平面求交，角度增量 → 绕轴旋转。"""
+        rayO, rayD = self._screenRay(x, y)
+        if rayD is None:
+            return
+        n = self._axisVec(axis)
+        denom = float(rayD @ n)
+        if abs(denom) < 1e-9:
+            return
+        tPlane = float((origin - rayO) @ n) / denom
+        hit = rayO + rayD * tPlane
+        if self._gizmoStartT is None:
+            self._gizmoStartT = (hit, 0.0)
+            return
+        ref, base = self._gizmoStartT
+        # 以参考平面点建立局部坐标（u,v），用 atan2 求旋转角
+        u = np.array([1.0, 0.0, 0.0])
+        if abs(float(u @ n)) > 0.9:
+            u = np.array([0.0, 0.0, 1.0])
+        u = u - (u @ n) * n
+        u = u / max(float(np.linalg.norm(u)), 1e-9)
+        v = np.cross(n, u)
+        angNow = math.atan2(float((hit - origin) @ v), float((hit - origin) @ u))
+        angRef = math.atan2(float((ref - origin) @ v), float((ref - origin) @ u))
+        delta = angNow - angRef
+        if delta > math.pi: delta -= 2 * math.pi
+        if delta < -math.pi: delta += 2 * math.pi
+        tr = self.selected.transform
+        rot = np.asarray(tr.rotation, dtype=float).copy()
+        idx = {"x": 0, "y": 1, "z": 2}[axis]
+        rot[idx] += math.degrees(delta - base)
+        self._gizmoStartT = (ref, math.degrees(delta))
+        tr.rotation = rot
+        self._syncSelected()
+
+    def _syncSelected(self):
+        """Gizmo 改动后：触发 onSelect（联动检查器）+ 重绘。"""
+        self.renderFrame()
+
+    def _screenRay(self, x, y):
+        """视口坐标 → 世界射线 (origin, dir)；失败返回 (None, None)。"""
+        w, h = self.winfo_width(), self.winfo_height()
+        if w <= 0 or h <= 0:
+            return None, None
+        try:
+            mv = np.asarray(glGetFloatv(GL_MODELVIEW_MATRIX), dtype=float).reshape(4, 4).T
+            pr = np.asarray(glGetFloatv(GL_PROJECTION_MATRIX), dtype=float).reshape(4, 4).T
+            inv = np.linalg.inv(pr @ mv)
+            ndcX = 2.0 * x / w - 1.0
+            ndcY = 1.0 - 2.0 * y / h
+            near = inv @ np.array([ndcX, ndcY, -1.0, 1.0])
+            far = inv @ np.array([ndcX, ndcY, 1.0, 1.0])
+            if abs(near[3]) < 1e-9 or abs(far[3]) < 1e-9:
+                return None, None
+            pNear = near[:3] / near[3]
+            pFar = far[:3] / far[3]
+            d = pFar - pNear
+            n = np.linalg.norm(d)
+            if n < 1e-9:
+                return None, None
+            return pNear, d / n
+        except Exception:
+            return None, None
 
     def _onWheel(self, event):
         self.camera.zoom(event.delta)
@@ -582,7 +914,7 @@ class GLViewport(tk.Frame):
         self._teardownGL()
 
 
-# ---- 立方体几何数据 ----
+# ---- 立方体几何数据（Gizmo 方块手柄用） ----
 _CUBE_QUADS = [
     [(1, 1, 1), (-1, 1, 1), (-1, -1, 1), (1, -1, 1)],      # 前
     [(1, 1, -1), (1, -1, -1), (-1, -1, -1), (-1, 1, -1)],  # 后
@@ -591,35 +923,15 @@ _CUBE_QUADS = [
     [(1, 1, 1), (1, 1, -1), (-1, 1, -1), (-1, 1, 1)],      # 上
     [(1, -1, 1), (-1, -1, 1), (-1, -1, -1), (1, -1, -1)],  # 下
 ]
-_CUBE_EDGES = []
-for quad in _CUBE_QUADS:
-    for i in range(4):
-        a, b = quad[i], quad[(i + 1) % 4]
-        if (b, a) not in _CUBE_EDGES:
-            _CUBE_EDGES.append((a, b))
 
 
-def _makeSphere(stacks=10, slices=16):
-    """生成单位球体的经纬网格四边面（中心在原点，半径 1）。"""
-    quads = []
-    for i in range(stacks):
-        phi0 = math.pi * i / stacks
-        phi1 = math.pi * (i + 1) / stacks
-        for j in range(slices):
-            th0 = 2 * math.pi * j / slices
-            th1 = 2 * math.pi * (j + 1) / slices
-
-            def _v(phi, th):
-                return (math.sin(phi) * math.cos(th), math.cos(phi), math.sin(phi) * math.sin(th))
-
-            quads.append([_v(phi0, th0), _v(phi0, th1), _v(phi1, th1), _v(phi1, th0)])
-    edges = []
-    for quad in quads:
-        for i in range(4):
-            a, b = quad[i], quad[(i + 1) % 4]
-            if (b, a) not in edges:
-                edges.append((a, b))
-    return quads, edges
-
-
-_SPHERE_QUADS, _SPHERE_EDGES = _makeSphere()
+def _pointSegDist(px, py, a, b):
+    """点到线段（屏幕坐标）的最短距离。"""
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    lengthSq = dx * dx + dy * dy
+    if lengthSq < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / lengthSq))
+    return math.hypot(px - (ax + dx * t), py - (ay + dy * t))

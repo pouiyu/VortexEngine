@@ -40,14 +40,32 @@ class Transform(Component):
 
 
 class MeshRenderer(Component):
-    """网格渲染组件：决定物体画什么（立方体 / 球体）与基色。"""
+    """网格渲染组件：决定物体画什么与基色。
+
+    mesh 取值：
+    - "cube" / "sphere"：引擎内置 .obj 模型
+    - 资源路径（相对项目 Resources，如 "Models/rock.obj"）：导入的自定义模型
+    - None：空物体
+    """
 
     TYPE = "MeshRenderer"
 
     def __init__(self, mesh=None, color=(0.30, 0.55, 0.85)):
         super().__init__()
-        self.mesh = mesh            # "cube" / "sphere" / None（空物体）
+        self.mesh = mesh            # "cube" / "sphere" / 资源路径 / None
         self.color = list(color)    # RGB 0~1
+
+
+class Light(Component):
+    """光照组件：方向光 / 点光源（颜色 + 强度）。"""
+
+    TYPE = "Light"
+
+    def __init__(self, lightType="directional", color=(1.0, 1.0, 1.0), intensity=1.0):
+        super().__init__()
+        self.lightType = lightType          # "directional" / "point"
+        self.color = list(color)            # RGB 0~1
+        self.intensity = float(intensity)   # 倍率
 
 
 # ---- 物体 ----
@@ -202,10 +220,14 @@ def worldMatrix(go):
 
 # ---- 演示场景 ----
 def createDemoScene():
-    """生成演示场景：一个立方体（含 MeshRenderer，颜色橙红系便于观察）。"""
+    """生成演示场景：一个立方体 + 一个方向光。"""
     scene = Scene()
     cube = GameObject(name="立方体")
     cube.addComponent(MeshRenderer(mesh="cube", color=(0.35, 0.55, 0.85)))
     cube.transform.position = np.array([0.0, 1.0, 0.0])
     scene.addObject(cube)
+    sun = GameObject(name="方向光")
+    sun.addComponent(Light(lightType="directional", color=(1.0, 1.0, 0.95), intensity=1.0))
+    sun.transform.rotation = np.array([45.0, -30.0, 0.0])
+    scene.addObject(sun)
     return scene

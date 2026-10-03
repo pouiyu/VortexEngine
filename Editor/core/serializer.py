@@ -10,7 +10,7 @@ import uuid
 
 import numpy as np
 
-from .scene import GameObject, MeshRenderer, Scene, Transform
+from .scene import GameObject, Light, MeshRenderer, Scene, Transform
 
 SCHEMA = 3
 
@@ -34,6 +34,13 @@ def serializeComponent(comp):
         }
     if isinstance(comp, MeshRenderer):
         return {"type": "MeshRenderer", "mesh": comp.mesh, "color": list(comp.color)}
+    if isinstance(comp, Light):
+        return {
+            "type": "Light",
+            "lightType": comp.lightType,
+            "color": list(comp.color),
+            "intensity": comp.intensity,
+        }
     return {"type": "Unknown"}
 
 
@@ -52,6 +59,11 @@ def deserializeComponent(data):
     if ctype == "MeshRenderer":
         color = _listOrNone(data.get("color"))
         return MeshRenderer(mesh=data.get("mesh"), color=color or [0.30, 0.55, 0.85])
+    if ctype == "Light":
+        color = _listOrNone(data.get("color"))
+        return Light(lightType=data.get("lightType") or "directional",
+                     color=color or [1.0, 1.0, 1.0],
+                     intensity=data.get("intensity", 1.0))
     return None
 
 

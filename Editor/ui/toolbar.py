@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""工具栏：项目名 + 创建物体按钮（V3 起可用）+ 播放占位。按钮使用 PNG 小图标。"""
+"""工具栏：项目名 + 创建物体下拉列表 + 播放占位。
+
+创建物体改为「选择列表」：点按钮弹菜单，列出空物体 / 立方体 / 球体 /
+方向光 / 点光源（kind 交给 main.createObject 处理）。
+"""
 
 from pathlib import Path
 import tkinter as tk
@@ -7,11 +11,20 @@ from tkinter import messagebox, ttk
 
 ICONS_DIR = Path(__file__).resolve().parent.parent / "assets" / "icons"
 
+# 创建列表：显示名 → kind（与 main.CREATE_OPTIONS 保持一致）
+CREATE_ITEMS = [
+    ("空物体", "empty"),
+    ("立方体", "cube"),
+    ("球体", "sphere"),
+    ("方向光", "directional"),
+    ("点光源", "point"),
+]
+
 
 class Toolbar(ttk.Frame):
     """编辑器顶部工具栏。
 
-    onCreate(kind)：由 main 提供，kind 为 "empty" / "cube" / "sphere"。
+    onCreate(kind)：由 main 提供，kind 为 CREATE_ITEMS 中的值。
     """
 
     def __init__(self, master, projectName="未命名项目", onCreate=None, **kw):
@@ -21,24 +34,21 @@ class Toolbar(ttk.Frame):
         ttk.Label(self, text=f"项目：{projectName}", padding=(8, 4)).pack(side=tk.LEFT)
 
         ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
-        self._iconButton("创建立方体", "cube.png", "cube")
-        self._iconButton("创建球体", "sphere.png", "sphere")
-        self._textButton("空物体", "empty")
+        self._createMenu()
         ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
         self._textButton("播放", None, hint="播放模式 V5 实现")
 
-    def _iconButton(self, text, iconName, kind):
-        """带 PNG 小图标的创建按钮；图标缺失时退化为纯文字。"""
-        btn = ttk.Button(self, text=text, compound=tk.LEFT)
-        iconPath = ICONS_DIR / iconName
-        if iconPath.exists():
-            self._images[iconName] = tk.PhotoImage(file=str(iconPath))
-            btn.config(image=self._images[iconName])
-        btn.config(command=lambda: self._trigger(kind, text))
-        btn.pack(side=tk.LEFT, padx=2)
+    def _createMenu(self):
+        """「创建物体」下拉：选项来自 CREATE_ITEMS（选择列表）。"""
+        menubtn = ttk.Menubutton(self, text="创建物体 ▼")
+        menu = tk.Menu(menubtn, tearoff=0)
+        for label, kind in CREATE_ITEMS:
+            menu.add_command(label=label, command=lambda k=kind: self._trigger(k, label))
+        menubtn.config(menu=menu)
+        menubtn.pack(side=tk.LEFT, padx=2)
 
     def _textButton(self, text, kind, hint=None):
-        """纯文字按钮（空物体 / 播放占位）。"""
+        """纯文字按钮（播放占位）。"""
         btn = ttk.Button(self, text=text)
         btn.config(command=lambda: self._trigger(kind, text, hint))
         btn.pack(side=tk.LEFT, padx=2)

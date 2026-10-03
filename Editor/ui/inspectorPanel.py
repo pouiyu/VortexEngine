@@ -10,17 +10,20 @@
 import tkinter as tk
 from tkinter import ttk
 
-from ..core.scene import MeshRenderer, Transform
+from ..core.meshCache import listProjectMeshes
+from ..core.scene import Light, MeshRenderer, Transform
 
 
 class InspectorPanel(ttk.Frame):
     """显示并编辑选中物体的属性。"""
 
-    def __init__(self, master, scene=None, onValue=None, onStructure=None, **kw):
+    def __init__(self, master, scene=None, onValue=None, onStructure=None,
+                 projectRoot=None, **kw):
         super().__init__(master, **kw)
         self.scene = scene
         self.onValue = onValue          # 数值变化：仅重绘视口
         self.onStructure = onStructure  # 结构变化：刷新层级 + 重绘视口
+        self.projectRoot = projectRoot  # 项目根（网格下拉列出 Resources 下 .obj）
         self.selected = None
 
         ttk.Label(self, text="检查器", padding=(6, 3)).pack(fill=tk.X)
@@ -97,12 +100,14 @@ class InspectorPanel(ttk.Frame):
 
     # ---- 组件区：一个组件一个框 ----
     def _buildComponents(self, obj):
-        """按组件逐个画独立 LabelFrame 框（Transform / 网格渲染器），底部是添加按钮。"""
+        """按组件逐个画独立 LabelFrame 框（Transform / 网格渲染器 / 光照），底部是添加按钮。"""
         for comp in obj.components:
             if isinstance(comp, Transform):
                 self._buildTransformBox(obj)
             elif isinstance(comp, MeshRenderer):
                 self._buildMeshBox(obj, comp)
+            elif isinstance(comp, Light):
+                self._buildLightBox(obj, comp)
         addRow = ttk.Frame(self.proxy)
         addRow.pack(fill=tk.X, padx=6, pady=4)
         ttk.Button(addRow, text="+ 添加组件",
@@ -164,7 +169,7 @@ class InspectorPanel(ttk.Frame):
         meshRow = ttk.Frame(sec)
         meshRow.pack(fill=tk.X, padx=(12, 0), pady=1)
         ttk.Label(meshRow, text="网格").pack(side=tk.LEFT)
-        combo = ttk.Combobox(meshRow, values=["cube", "sphere"], width=7, state="readonly")
+        combo = ttk.Combobox(meshRow, values=self._meshOptions(), width=16, state="readonly")
         combo.set(mr.mesh or "")
         combo.pack(side=tk.LEFT, padx=(4, 0))
 
@@ -188,6 +193,73 @@ class InspectorPanel(ttk.Frame):
                    lambda _ev, ee=e, idx=i: self._commitColor(mr, ee, swatch, idx))
             e.bind("<MouseWheel>",
                    lambda ev, ee=e, idx=i: self._onColorWheel(ev, ee, mr, swatch, idx))
+
+    def _meshOptions(self):
+        """网格下拉候选：内置 cube/sphere + 项目 Resources 下所有 .obj。"""
+        options = ["cube", "sphere"]
+        if self.projectRoot:
+            options += listProjectMeshes(self.projectRoot)
+        return options
+
+    def refreshMeshOptions(self):
+        """外部（导入模型后）刷新网格下拉候选。"""
+        if self.selected is not None:
+            self.showObject(self.selected)
+
+    def _buildLightBox(self, obj, lt):
+        """光照组件框：类型下拉 + 颜色 RGB + 强度。"""
+        sec = ttk.LabelFrame(self.proxy, text="光照", padding=6)
+        sec.pack(fill=tk.X, padx=6, pady=4)
+        head = ttk.Frame(sec)
+        head.pack(fill=tk.X)
+        ttk.Button(head, text="移除", width=4,
+                   command=lambda: self._removeComponent(obj, lt)).pack(side=tk.RIGHT)
+
+        typeRow = ttk.Frame(sec)
+        typeRow.pack(fill=tk.X, padx=(12, 0), pady=1)
+        ttk.Label(typeRow, text="类型").pack(side=tk.LEFT)
+        combo = ttk.Combobox(typeRow, values=["directional", "point"], width=12,
+                             state="readonly")
+        combo.set(lt.lightType)
+        combo.pack(side=tk.LEFT, padx=(4, 0))
+
+        def _setType(_e=None):
+            lt.lightType = combo.get() or "directional"
+            if self.onValue:
+                self.onValue()
+
+        combo.bind("<<ComboboxSelected>>", _setType)
+
+        colorRow = ttk.Frame(sec)
+        colorRow.pack(fill=tk.X, padx=(12, 0), pady=1)
+        ttk.Label(colorRow, text="颜色").pack(side=tk.LEFT)
+        swatch = tk.Label(colorRow, width=3, relief=tk.SUNKEN, bg=self._hex(lt.color))
+        swatch.pack(side=tk.LEFT, padx=(4, 2))
+        for i, label in enumerate(("R", "G", "B")):
+            e = ttk.Entry(colorRow, width=4)
+            e.insert(0, str(int(round(lt.color[i] * 255))))
+            e.pack(side=tk.LEFT, padx=1)
+            e.bind("<KeyRelease>",
+                   lambda _ev, ee=e, idx=i: self._commitColor(lt, ee, swatch, idx))
+            e.bind("<MouseWheel>",
+                   lambda ev, ee=e, idx=i: self._onColorWheel(ev, ee, lt, swatch, idx))
+
+        intenRow = ttk.Frame(sec)
+        intenRow.pack(fill=tk.X, padx=(12, 0), pady=1)
+        ttk.Label(intenRow, text="强度").pack(side=tk.LEFT)
+        eInt = ttk.Entry(intenRow, width=6)
+        eInt.insert(0, f"{lt.intensity:g}")
+        eInt.pack(side=tk.LEFT, padx=(4, 0))
+
+        def _commitIntensity(_ev=None):
+            try:
+                lt.intensity = max(0.0, float(eInt.get()))
+            except ValueError:
+                return
+            if self.onValue:
+                self.onValue()
+
+        eInt.bind("<KeyRelease>", _commitIntensity)
 
     @staticmethod
     def _hex(color):
@@ -218,7 +290,7 @@ class InspectorPanel(ttk.Frame):
         return "break"
 
     def _menuAddComponent(self, anchor, obj):
-        """「+ 添加组件」下拉：目前仅网格渲染器（已有则禁用）。"""
+        """「+ 添加组件」下拉：网格渲染器 / 光照（已有则禁用）。"""
         menu = tk.Menu(self, tearoff=0)
         if obj.getComponent(MeshRenderer) is None:
             menu.add_command(
@@ -227,6 +299,17 @@ class InspectorPanel(ttk.Frame):
                     obj, MeshRenderer(mesh="cube", color=[0.30, 0.55, 0.85])))
         else:
             menu.add_command(label="网格渲染器（已有）", state=tk.DISABLED)
+        if obj.getComponent(Light) is None:
+            menu.add_command(
+                label="光照（方向光）",
+                command=lambda: self._addComponent(
+                    obj, Light(lightType="directional", color=[1.0, 1.0, 0.95], intensity=1.0)))
+            menu.add_command(
+                label="光照（点光源）",
+                command=lambda: self._addComponent(
+                    obj, Light(lightType="point", color=[1.0, 0.9, 0.7], intensity=1.2)))
+        else:
+            menu.add_command(label="光照（已有）", state=tk.DISABLED)
         menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height())
 
     def _addComponent(self, obj, comp):
