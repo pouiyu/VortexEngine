@@ -461,10 +461,7 @@ class EditorApp:
         dt = now - self._lastFPS
         self._lastFPS = now
         if dt > 0:
-            if frames > 0:
-                self.status.showFPS(frames / dt)
-            else:
-                self.status.showIdle()   # 空闲暂停渲染（无任何物体/相机运动）
+            self.status.showFPS(frames / dt)
         self.root.after(REFRESH_MS, self._updateFPS)
 
 
@@ -557,12 +554,11 @@ def selftest():
                 break
             time.sleep(0.05)
         assert vp._ctx is not None, "OpenGL 上下文未创建（WGL 嵌入失败）"
-        # 上下文刚建立时立即做 GL 调用会报 1282，先让首帧渲染（空闲暂停模式下
-        # 连续循环不会自动跑：先验证 renderFrame 可直调渲染）
+        # 上下文刚建立时立即做 GL 调用会报 1282，先让渲染循环转几帧
         time.sleep(0.2)
         root.update()
         fc0 = vp.frameCount
-        vp.renderFrame()   # 显式渲染一帧（空闲暂停下同样有效）
+        vp.renderFrame()   # 显式渲染一帧（帧计数递增）
         root.update()
         assert vp.frameCount > fc0, "renderFrame 未渲染（frameCount 未递增）"
         ver = vp.glVersion()
@@ -570,22 +566,13 @@ def selftest():
         # 拾取逻辑自检：点击视口中心应命中演示立方体
         picked = vp.pickObject(vp.winfo_width() // 2, vp.winfo_height() // 2)
         assert picked is not None, "视口中心拾取未命中物体"
-        # 空闲暂停验证：无交互时连续 update 不应产生新帧
+        # 连续渲染验证：update 循环应持续产生新帧（60fps 连续渲染）
         fc1 = vp.frameCount
         for _ in range(5):
             root.update()
             time.sleep(0.05)
-        assert vp.frameCount == fc1, "空闲时不应连续渲染（暂停未生效）"
-        # 浏览模式应恢复连续渲染
-        vp._flyActive = True
-        vp._ensureLoop()
-        fc2 = vp.frameCount
-        for _ in range(5):
-            root.update()
-            time.sleep(0.05)
-        assert vp.frameCount > fc2, "浏览模式应恢复连续渲染"
-        vp._flyActive = False
-        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染 / 拾取 / 空闲暂停 / 图标（{ver}）")
+        assert vp.frameCount > fc1, "连续渲染循环未运行"
+        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染 / 拾取 / 连续渲染 / 图标（{ver}）")
         vp.dispose()
         root.destroy()
     return 0

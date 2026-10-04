@@ -304,7 +304,7 @@ class GLViewport(tk.Frame):
         gluLookAt(eye[0], eye[1], eye[2], center[0], center[1], center[2], up[0], up[1], up[2])
 
     def renderFrame(self):
-        """渲染一帧并计数（自检 / 外部事件可直调；空闲暂停模式下同样有效）。"""
+        """渲染一帧并计数（自检 / 外部事件可直调）。"""
         if not self._running:
             return
         if not self._ensureContext():
@@ -679,7 +679,7 @@ class GLViewport(tk.Frame):
         except Exception:
             return None
 
-    # ---- 帧循环（空闲暂停：没有任何物体/相机运动时停止连续渲染） ----
+    # ---- 帧循环（连续渲染 60fps） ----
     def _tick(self):
         if not self._running:
             return
@@ -691,24 +691,13 @@ class GLViewport(tk.Frame):
             self.renderFrame()
         except Exception:
             pass                    # 单帧异常不中断渲染循环
-        if self._flyActive or self._chars:
-            # 相机仍在运动（浏览转头 / 按键移动）→ 保持渲染循环
-            self._after = self.after(REF, self._tick)
-        else:
-            # 空闲：暂停循环，等待交互事件直接 renderFrame 或 _ensureLoop 重启
-            self._after = None
-
-    def _ensureLoop(self):
-        """交互开始（浏览模式/按键移动）时重启渲染循环。"""
-        if self._running and self._after is None:
-            self._after = self.after(REF, self._tick)
+        self._after = self.after(REF, self._tick)
 
     # ---- 浏览模式（中键）----
     def _onPressMiddle(self, event):
         self._flyActive = True
         self._hideCursor(True)
         self.focus_set()
-        self._ensureLoop()   # 浏览模式开始：恢复连续渲染
         # 以“当前实际光标位置”为转头基准（物理屏幕坐标，兼容高 DPI）
         self._flyRefX, self._flyRefY = self._cursorPos()
         self._warpToCenter()
@@ -769,8 +758,6 @@ class GLViewport(tk.Frame):
         for action, key in self.keyBinds.items():
             if event.keysym.lower() == key.lower():
                 self._chars.add(action)
-                if self._flyActive:
-                    self._ensureLoop()   # 浏览模式按键移动：恢复连续渲染
                 break
 
     def focusSelected(self):
@@ -824,7 +811,7 @@ class GLViewport(tk.Frame):
             self._moved = True
             self._pressX, self._pressY = event.x, event.y
             self.camera.pan(dx, dy)
-            self.renderFrame()   # 空闲暂停下也必须即时刷新画面
+            self.renderFrame()   # 相机移动后立即刷新画面
             return
         if self._gizmoDrag is not None:
             # Gizmo 拖拽：按轴变换选中物体
@@ -836,7 +823,7 @@ class GLViewport(tk.Frame):
         self._moved = True
         self._pressX, self._pressY = event.x, event.y
         self.camera.orbit(dx, dy)
-        self.renderFrame()   # 空闲暂停下也必须即时刷新画面
+        self.renderFrame()   # 相机移动后立即刷新画面
 
     def _onReleaseLeft(self, event):
         if not self._moved and self._pressX is not None:
@@ -1031,7 +1018,7 @@ class GLViewport(tk.Frame):
 
     def _onWheel(self, event):
         self.camera.zoom(event.delta)
-        self.renderFrame()   # 空闲暂停下也必须即时刷新画面
+        self.renderFrame()   # 相机缩放后立即刷新画面
 
     # ---- 辅助 ----
     def _cursorPos(self):
