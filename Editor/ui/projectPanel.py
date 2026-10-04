@@ -51,13 +51,14 @@ class ProjectPanel(tk.Frame):
 
     def __init__(self, master, projectRoot=None, onOpenScene=None,
                  onUseMesh=None, onEditMaterial=None, onImport=None,
-                 onStatus=None, **kw):
+                 onOpenScript=None, onStatus=None, **kw):
         super().__init__(master, **kw)
         self.projectRoot = Path(projectRoot) if projectRoot else None
         self.onOpenScene = onOpenScene      # 双击 .vscene：打开场景
         self.onUseMesh = onUseMesh          # 双击 .obj：使用该模型
         self.onEditMaterial = onEditMaterial  # 选中/双击 .vmat：检查器编辑材质
         self.onImport = onImport            # 导入模型完成回调（刷新检查器网格下拉）
+        self.onOpenScript = onOpenScript    # 双击 .vpy：打开内置代码编辑器
         self.onStatus = onStatus            # 状态栏消息回调
         self._clipboard = None              # Ctrl+C/X 剪切源（Path）
         self._cutMode = False               # True=剪切（粘贴=移动）
@@ -533,6 +534,8 @@ class ProjectPanel(tk.Frame):
             rel = self._relPath(path)
             if rel:
                 self.onUseMesh(rel)
+        elif suffix == ".vpy" and self.onOpenScript:
+            self.onOpenScript(path)
 
     def _status(self, msg):
         if self.onStatus:

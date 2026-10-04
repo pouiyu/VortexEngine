@@ -107,6 +107,7 @@ class EditorApp:
         self._playing = False           # 播放模式（V5：脚本每帧执行）
         self._playSnapshot = None       # 播放开始时的场景快照（停止时恢复）
         self._playWindow = None         # 播放窗口（游戏视图）
+        self._codeEditors = {}          # 打开的代码编辑器：路径 → CodeEditorWindow
         self._unsaved = False           # 未保存修改标记（标题显示 *）
         self._updatingTitle = False
         self._updateTitle()
@@ -147,6 +148,24 @@ class EditorApp:
     def clearUnsaved(self):
         self._unsaved = False
         self._updateTitle()
+
+    # ---- 内置代码编辑器（V5.2：双击 .vpy 打开） ----
+    def openScriptEditor(self, path):
+        """打开（或聚焦已打开的）脚本编辑器窗口。"""
+        from .ui.codeEditor import CodeEditorWindow
+        key = str(Path(path).resolve())
+        win = self._codeEditors.get(key)
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.lift()
+                    win.focus_force()
+                    return
+            except Exception:
+                pass
+        editor = CodeEditorWindow(self.root, Path(path),
+                                  onClosed=lambda k=key: self._codeEditors.pop(k, None))
+        self._codeEditors[key] = editor
 
     # ---- 播放模式（V5：脚本每帧执行） ----
     def _togglePlay(self):
@@ -218,6 +237,19 @@ class EditorApp:
         """退出：有未保存修改时询问是否保存；播放中先停止（关播放窗口）。"""
         if self._playing:
             self._stopPlay()
+        # 关闭所有代码编辑器（有未保存修改会弹提示；取消则中止退出）
+        for key, ed in list(self._codeEditors.items()):
+            try:
+                if ed.winfo_exists():
+                    ed._close()
+            except Exception:
+                pass
+        try:
+            alive = [k for k, ed in self._codeEditors.items() if ed.winfo_exists()]
+        except Exception:
+            alive = []
+        if alive:
+            return
         if self._unsaved:
             choice = messagebox.askyesnocancel(
                 "未保存", f"「{self.projectName}」有未保存的修改，是否保存？")
@@ -273,6 +305,7 @@ class EditorApp:
             "tkinter 界面 + OpenGL（WGL 嵌入）3D 视口\n"
             "GameObject + 组件（变换 / 网格渲染器 / 光照 / 摄像机 / 脚本）\n"
             "资源系统：.obj 模型 / .vmat 材质 / .vscene 场景 / .vpy 脚本\n"
+            "内置代码编辑器：双击 .vpy 打开，语法高亮 + Ctrl+S 保存\n"
             "播放模式：▶ 播放（F5）执行物体脚本，弹出游戏视图窗口，停止恢复播放前场景\n"
             "下一阶段：V6 运行时导出",
         )
@@ -306,6 +339,7 @@ class EditorApp:
                                     onUseMesh=self._onUseMesh,
                                     onEditMaterial=self._onEditMaterial,
                                     onImport=self._onModelImported,
+                                    onOpenScript=self.openScriptEditor,
                                     onStatus=self.status.showMessage if hasattr(self, "status") else None)
         left.add(self.project, weight=1)
 
@@ -774,7 +808,23 @@ def selftest():
         restored = app.scene.findByUuid(go.uuid)
         assert restored is not None and abs(restored.transform.position[0] - 0.0) < 1e-6, \
             "停止播放未恢复播放前场景"
-        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染 / 拾取 / 连续渲染 / 脚本播放 / 图标（{ver}）")
+        # V5.2：代码编辑器（高亮 + 保存写回）
+        from .ui.codeEditor import CodeEditorWindow
+        sp = proj / "Resources" / "Scripts" / "高亮.vpy"
+        sp.parent.mkdir(exist_ok=True)
+        sp.write_text("def start(obj):\n    # 注释\n    x = 1 + 2\n    pass\n", encoding="utf-8")
+        ce = CodeEditorWindow(root, sp)
+        root.update()
+        assert ce.editor.tag_ranges("keyword"), "关键字高亮未生效"
+        assert ce.editor.tag_ranges("comment"), "注释高亮未生效"
+        ce.editor.insert("end", "\nobj.transform.rotation[1] += 1  # 转")
+        ce.editor.edit_modified(False)
+        ce.save()
+        root.update()
+        assert "rotation[1] += 1" in sp.read_text(encoding="utf-8"), "代码编辑器保存失败"
+        ce._dirty = False
+        ce.destroy()
+        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染 / 拾取 / 连续渲染 / 脚本播放 / 代码编辑器 / 图标（{ver}）")
         vp.dispose()
         root.destroy()
     return 0
