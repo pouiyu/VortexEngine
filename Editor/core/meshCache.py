@@ -75,15 +75,18 @@ def listProjectMeshes(projectRoot):
                   for p in res.rglob("*.obj") if p.is_file())
 
 
-def importModel(srcPath, projectRoot, subdir="Models"):
-    """把 .obj 复制进项目 Resources/<subdir>/，返回相对资源路径；失败抛 OSError。"""
+def importModel(srcPath, projectRoot, subdir=""):
+    """把 .obj 复制进项目 Resources 下，返回相对资源路径；失败抛 OSError。
+
+    subdir 为相对 Resources 的目录（如 "MyFolder"），为空则直接放 Resources 根。
+    目录必须已存在（由资源浏览器负责创建/定位），不再自动建 Models 子文件夹。"""
     src = Path(srcPath)
     if src.suffix.lower() != ".obj":
         raise ValueError("仅支持 .obj 模型文件")
-    targetDir = Path(projectRoot) / "Resources" / subdir
-    targetDir.mkdir(parents=True, exist_ok=True)
+    resDir = Path(projectRoot) / "Resources"
+    targetDir = resDir / subdir if subdir else resDir
     target = targetDir / src.name
     if target.resolve() != src.resolve():
         import shutil
         shutil.copy2(src, target)
-    return (Path(subdir) / src.name).as_posix()
+    return target.relative_to(resDir).as_posix()

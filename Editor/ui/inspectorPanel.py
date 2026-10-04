@@ -455,7 +455,9 @@ class InspectorPanel(ttk.Frame):
         return "break"
 
     def _menuAddComponent(self, anchor, obj):
-        """「+ 添加组件」下拉：网格渲染器 / 光照 / 摄像机（已有则禁用）。"""
+        """「+ 添加组件」下拉：网格渲染器 / 光照 / 摄像机（已有则禁用）。
+
+        光照不区分方向光/点光源变体：添加后在检查器里切换类型。"""
         menu = tk.Menu(self, tearoff=0)
         if obj.getComponent(MeshRenderer) is None:
             menu.add_command(
@@ -466,13 +468,9 @@ class InspectorPanel(ttk.Frame):
             menu.add_command(label="网格渲染器（已有）", state=tk.DISABLED)
         if obj.getComponent(Light) is None:
             menu.add_command(
-                label="光照（方向光）",
+                label="光照",
                 command=lambda: self._addComponent(
                     obj, Light(lightType="directional", color=[1.0, 1.0, 0.95], intensity=1.0)))
-            menu.add_command(
-                label="光照（点光源）",
-                command=lambda: self._addComponent(
-                    obj, Light(lightType="point", color=[1.0, 0.9, 0.7], intensity=1.2)))
         else:
             menu.add_command(label="光照（已有）", state=tk.DISABLED)
         if obj.getComponent(Camera) is None:

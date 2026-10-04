@@ -20,6 +20,10 @@ class StatusBar(tk.Frame):
     def showFPS(self, fps):
         self.fpsVar.set(f"FPS {fps:.0f}")
 
+    def showIdle(self):
+        """空闲：渲染已暂停（没有任何物体/相机运动）。"""
+        self.fpsVar.set("待机（已暂停渲染）")
+
     def showMessage(self, text):
         """临时消息（保存/打开结果提示）。"""
         self.msgVar.set(text)

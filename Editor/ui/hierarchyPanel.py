@@ -5,14 +5,57 @@
 - 位移 < 5px 视为点击（仅选中）
 - 不能拖到自身、自身子孙、或「场景」根节点（允许拖回根）
 - 拖到根节点「场景」= 设为根物体
+
+Ctrl+C / Ctrl+V：复制选中物体（含整棵子树）→ 粘贴为新物体。
 """
 
 import tkinter as tk
 from tkinter import ttk
 
+from ..core.scene import Camera, Light, MeshRenderer, Transform
+
+
+def cloneComponent(comp):
+    """深拷贝一个组件（各组件类型字段独立复制）。"""
+    if isinstance(comp, Transform):
+        return Transform(position=comp.position.copy(),
+                         rotation=comp.rotation.copy(),
+                         scale=comp.scale.copy())
+    if isinstance(comp, MeshRenderer):
+        return MeshRenderer(mesh=comp.mesh, material=comp.material)
+    if isinstance(comp, Light):
+        return Light(lightType=comp.lightType,
+                     color=list(comp.color), intensity=comp.intensity)
+    if isinstance(comp, Camera):
+        return Camera(fov=comp.fov, near=comp.near, far=comp.far)
+    return None
+
+
+def cloneObjectTree(obj, parent=None):
+    """深拷贝物体及其整棵子树（新 uuid，保持内部父子结构）。
+
+    GameObject 构造已带默认 Transform：直接覆盖其数值，其余组件逐个复制。"""
+    from ..core.scene import GameObject
+    newObj = GameObject(name=obj.name, active=obj.active)
+    for comp in obj.components:
+        if isinstance(comp, Transform):
+            newObj.components[0].position = comp.position.copy()
+            newObj.components[0].rotation = comp.rotation.copy()
+            newObj.components[0].scale = comp.scale.copy()
+            continue
+        clone = cloneComponent(comp)
+        if clone is not None:
+            newObj.addComponent(clone)
+    if parent is not None:
+        parent.children.append(newObj)
+        newObj.parent = parent
+    for child in obj.children:
+        cloneObjectTree(child, newObj)
+    return newObj
+
 
 class HierarchyPanel(tk.Frame):
-    """层级树（V4：父子递归 + 拖拽设父子）。"""
+    """层级树（V4：父子递归 + 拖拽设父子 + 复制粘贴）。"""
 
     def __init__(self, master, scene=None, onSelect=None, onStructure=None, **kw):
         super().__init__(master, **kw)
@@ -20,6 +63,7 @@ class HierarchyPanel(tk.Frame):
         self.onSelect = onSelect
         self.onStructure = onStructure   # 结构变化回调（main 刷新其它面板/视图）
         self.selected = None
+        self._clipboard = None           # Ctrl+C 复制源（物体）
 
         header = ttk.Label(self, text="层级", padding=(6, 3))
         header.pack(fill=tk.X)
@@ -28,11 +72,35 @@ class HierarchyPanel(tk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self._onSelect)
         self.tree.bind("<ButtonPress-1>", self._onPress)
         self.tree.bind("<ButtonRelease-1>", self._onRelease)
+        self.tree.bind("<Control-c>", self._onCopy)
+        self.tree.bind("<Control-v>", self._onPaste)
         self.tree.tag_configure("inactive", foreground="#888")
         self._idToObj = {}   # tree iid → 物体映射
         self._dragSource = None
         self._pressPos = None
         self.refresh()
+
+    # ---- 复制 / 粘贴 ----
+    def _onCopy(self, _event):
+        if self.selected is not None:
+            self._clipboard = self.selected
+            return "break"
+        return "break"
+
+    def _onPaste(self, _event):
+        if self._clipboard is None or self.scene is None:
+            return "break"
+        clone = cloneObjectTree(self._clipboard)
+        self.scene.addObject(clone)
+        # 粘贴到原物体父级下（根物体则放场景根），位置保持原位
+        if self._clipboard.parent is not None:
+            self.scene.setParent(clone, self._clipboard.parent)
+        self.refresh()
+        if self.onSelect:
+            self.onSelect(clone)
+        if self.onStructure:
+            self.onStructure()
+        return "break"
 
     def refresh(self):
         """重建树：根节点「场景」+ 根物体递归插入子物体。"""

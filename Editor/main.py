@@ -101,8 +101,10 @@ class EditorApp:
             self.scenePath = None
         self.prefs = loadPreferences()
         self.selected = None            # 当前选中物体（结构刷新后恢复高亮用）
+        self._unsaved = False           # 未保存修改标记（标题显示 *）
+        self._updatingTitle = False
+        self._updateTitle()
 
-        root.title(f"{APP_NAME} — {self.projectName}")
         root.geometry("1280x760")
         root.minsize(900, 600)
 
@@ -113,11 +115,42 @@ class EditorApp:
         root.bind("<Delete>", lambda e: self.deleteSelected())
         root.bind("<Control-s>", lambda e: self.saveScene())
         root.bind("<Control-o>", lambda e: self.openScene())
+        # 退出前检查未保存修改
+        root.protocol("WM_DELETE_WINDOW", self._onClose)
 
         # 帧率统计
         self._lastFrames = 0
         self._lastFPS = time.monotonic()
         root.after(REFRESH_MS, self._updateFPS)
+
+    # ---- 未保存标记 ----
+    def _updateTitle(self):
+        star = " *" if self._unsaved else ""
+        self.root.title(f"{APP_NAME} — {self.projectName}{star}")
+
+    def markUnsaved(self):
+        """任意场景修改（变换/结构/增删/材质引用等）→ 标题加 *。"""
+        self._unsaved = True
+        self._updateTitle()
+
+    def clearUnsaved(self):
+        self._unsaved = False
+        self._updateTitle()
+
+    def _onClose(self):
+        """退出：有未保存修改时询问是否保存。"""
+        if self._unsaved:
+            choice = messagebox.askyesnocancel(
+                "未保存", f"「{self.projectName}」有未保存的修改，是否保存？")
+            if choice is None:
+                return                     # 取消：留在编辑器
+            if choice:
+                self.saveScene()           # 保存失败也会弹窗，直接继续关闭
+        try:
+            self.viewport.dispose()
+        except Exception:
+            pass
+        self.root.destroy()
 
     # ---- 菜单栏 ----
     def _buildMenu(self):
@@ -157,10 +190,11 @@ class EditorApp:
     def _showAbout(self):
         messagebox.showinfo(
             APP_NAME,
-            "Vortex 游戏编辑器（V3 游戏对象系统）\n"
+            "Vortex 游戏编辑器（V4 资源系统）\n"
             "tkinter 界面 + OpenGL（WGL 嵌入）3D 视口\n"
-            "GameObject + 组件（Transform / 网格渲染器）+ scene.json 序列化\n"
-            "下一阶段：V4 渲染核心、V5 脚本组件与播放模式",
+            "GameObject + 组件（变换 / 网格渲染器 / 光照 / 摄像机）\n"
+            "资源系统：.obj 模型 / .vmat 材质 / .vscene 场景\n"
+            "下一阶段：V5 脚本组件与播放模式",
         )
 
     # ---- 布局 ----
@@ -215,6 +249,7 @@ class EditorApp:
             self.inspector.refreshTransformValues(obj)
         else:
             self.inspector.showObject(obj)
+            self.markUnsaved()
 
     def _onGizmoMode(self, mode):
         """工具栏按钮切换 Gizmo 模式。"""
@@ -237,11 +272,13 @@ class EditorApp:
         self.hierarchy.selectObject(obj)
 
     def _onValue(self):
-        """数值变化（变换/颜色）：仅重绘视口。"""
+        """数值变化（变换/颜色）：标记未保存 + 仅重绘视口。"""
+        self.markUnsaved()
         self.viewport.renderFrame()
 
     def _onStructure(self):
         """结构变化（名称/激活/父子/组件增删）：刷新层级 + 重绘，并恢复选中高亮。"""
+        self.markUnsaved()
         self.hierarchy.refresh()
         if self.selected is not None:
             self.hierarchy.selectObject(self.selected)
@@ -260,6 +297,7 @@ class EditorApp:
         self.viewport.setSelected(None)
         self.hierarchy.refresh()
         self.inspector.showObject(None)
+        self.markUnsaved()
 
     # ---- 场景文件 ----
     def _scenePath(self):
@@ -270,7 +308,16 @@ class EditorApp:
         return base / "scene.json"
 
     def _switchScene(self, scene, scenePath=None):
-        """把新场景接到所有面板（视口/层级/检查器）并刷新。"""
+        """把新场景接到所有面板（视口/层级/检查器）并刷新。
+
+        切换前若有未保存修改先询问（保存 / 不保存 / 取消）。"""
+        if self._unsaved:
+            choice = messagebox.askyesnocancel(
+                "未保存", f"当前场景有未保存的修改，是否先保存？")
+            if choice is None:
+                return False                     # 取消：不切换
+            if choice:
+                self.saveScene()
         self.scene = scene
         self.scenePath = scenePath
         self.viewport.scene = scene
@@ -281,17 +328,20 @@ class EditorApp:
         self.inspector.showObject(None)
         self.hierarchy.refresh()
         self.viewport.renderFrame()
+        self.clearUnsaved()
+        return True
 
     def newScene(self):
         """新建空场景（文件菜单，不落盘）。"""
-        self._switchScene(createDemoScene(), None)
-        self.status.showMessage("已新建演示场景（未保存）")
+        if self._switchScene(createDemoScene(), None):
+            self.status.showMessage("已新建演示场景（未保存）")
 
     def saveScene(self):
         """保存场景到当前场景文件（或项目根 scene.json）。"""
         try:
             path = saveSceneFile(self.scene, self._scenePath())
             self.scenePath = path
+            self.clearUnsaved()
             self.status.showMessage(f"已保存 {path.name}")
         except OSError as e:
             messagebox.showerror(APP_NAME, f"保存失败：{e}")
@@ -313,8 +363,8 @@ class EditorApp:
         scene = loadSceneFile(path)
         if not scene.objects:
             messagebox.showinfo(APP_NAME, f"「{path.name}」为空场景，已打开。")
-        self._switchScene(scene, path)
-        self.status.showMessage(f"已打开场景 {path.name}")
+        if self._switchScene(scene, path):
+            self.status.showMessage(f"已打开场景 {path.name}")
 
     def _onEditMaterial(self, rel):
         """资源浏览器选中/双击 .vmat：检查器进入材质编辑模式。"""
@@ -353,6 +403,7 @@ class EditorApp:
         self.hierarchy.refresh()
         self.hierarchy.selectObject(go)
         self.viewport.renderFrame()
+        self.markUnsaved()
         self.status.showMessage(f"已创建「{go.name}」")
 
     def importModel(self, path):
@@ -376,6 +427,7 @@ class EditorApp:
             mr = self.selected.getComponent(MeshRenderer)
             mr.mesh = rel
             self.viewport.renderFrame()
+            self.markUnsaved()
             self.status.showMessage(f"已把「{self.selected.name}」的网格设为 {rel}")
             return
         go = GameObject(name=Path(rel).stem)
@@ -387,6 +439,7 @@ class EditorApp:
         self.hierarchy.refresh()
         self.hierarchy.selectObject(go)
         self.viewport.renderFrame()
+        self.markUnsaved()
         self.status.showMessage(f"已创建物体（模型 {rel}）")
 
     # ---- 设置 ----
@@ -408,7 +461,10 @@ class EditorApp:
         dt = now - self._lastFPS
         self._lastFPS = now
         if dt > 0:
-            self.status.showFPS(frames / dt)
+            if frames > 0:
+                self.status.showFPS(frames / dt)
+            else:
+                self.status.showIdle()   # 空闲暂停渲染（无任何物体/相机运动）
         self.root.after(REFRESH_MS, self._updateFPS)
 
 
@@ -501,18 +557,35 @@ def selftest():
                 break
             time.sleep(0.05)
         assert vp._ctx is not None, "OpenGL 上下文未创建（WGL 嵌入失败）"
-        # 上下文刚建立时立即做 GL 调用会报 1282，先让渲染循环空转几帧再取版本
-        before = vp.frameCount
-        for _ in range(5):
-            root.update()
-            time.sleep(0.05)
-        assert vp.frameCount > before, "frameCount 未递增（渲染循环未运行）"
+        # 上下文刚建立时立即做 GL 调用会报 1282，先让首帧渲染（空闲暂停模式下
+        # 连续循环不会自动跑：先验证 renderFrame 可直调渲染）
+        time.sleep(0.2)
+        root.update()
+        fc0 = vp.frameCount
+        vp.renderFrame()   # 显式渲染一帧（空闲暂停下同样有效）
+        root.update()
+        assert vp.frameCount > fc0, "renderFrame 未渲染（frameCount 未递增）"
         ver = vp.glVersion()
         assert ver, "无法读取 OpenGL 版本"
         # 拾取逻辑自检：点击视口中心应命中演示立方体
         picked = vp.pickObject(vp.winfo_width() // 2, vp.winfo_height() // 2)
         assert picked is not None, "视口中心拾取未命中物体"
-        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染循环 / 拾取 / 图标（{ver}）")
+        # 空闲暂停验证：无交互时连续 update 不应产生新帧
+        fc1 = vp.frameCount
+        for _ in range(5):
+            root.update()
+            time.sleep(0.05)
+        assert vp.frameCount == fc1, "空闲时不应连续渲染（暂停未生效）"
+        # 浏览模式应恢复连续渲染
+        vp._flyActive = True
+        vp._ensureLoop()
+        fc2 = vp.frameCount
+        for _ in range(5):
+            root.update()
+            time.sleep(0.05)
+        assert vp.frameCount > fc2, "浏览模式应恢复连续渲染"
+        vp._flyActive = False
+        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染 / 拾取 / 空闲暂停 / 图标（{ver}）")
         vp.dispose()
         root.destroy()
     return 0

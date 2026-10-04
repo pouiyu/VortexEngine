@@ -68,10 +68,13 @@ def loadMaterial(material, projectRoot=None):
 
 
 def createMaterialFile(projectRoot, name="新材质", color=(0.70, 0.70, 0.80),
-                       subdir="Materials"):
-    """在项目 Resources/<subdir>/ 创建 .vmat，返回相对资源路径；失败抛 OSError。"""
-    targetDir = Path(projectRoot) / "Resources" / subdir
-    targetDir.mkdir(parents=True, exist_ok=True)
+                       subdir=""):
+    """在项目 Resources 下创建 .vmat，返回相对资源路径；失败抛 OSError。
+
+    subdir 为相对 Resources 的目录（如 "MyFolder"），为空则直接放 Resources 根。
+    目录必须已存在（由资源浏览器负责创建/定位），不再自动建子文件夹。"""
+    resDir = Path(projectRoot) / "Resources"
+    targetDir = resDir / subdir if subdir else resDir
     path = targetDir / f"{name}.vmat"
     n = 1
     while path.exists():
@@ -79,7 +82,7 @@ def createMaterialFile(projectRoot, name="新材质", color=(0.70, 0.70, 0.80),
         n += 1
     path.write_text(json.dumps({"name": path.stem, "color": list(color)},
                                ensure_ascii=False, indent=2), encoding="utf-8")
-    return (Path(subdir) / path.name).as_posix()
+    return path.relative_to(resDir).as_posix()
 
 
 def listProjectMaterials(projectRoot):

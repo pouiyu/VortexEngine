@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""场景数据层（V3.5：Unity 式 GameObject + 组件体系）。
+"""场景数据层（V4：Unity 式 GameObject + 组件体系）。
 
 - Component：组件基类（挂到物体上，默认每个物体挂一个 Transform）
 - Transform：位置 / 旋转（度，绕 X/Y/Z）/ 缩放（物体的第一个组件，不可移除）
 - MeshRenderer：网格渲染组件（mesh 键 + 材质键，颜色由材质决定）
 - Material：颜色等外观由材质资源（.vmat）配置，MeshRenderer 只引用
-- Light：光照组件（方向光 / 点光源）
-- Camera：摄像机组件（fov / near / far）
+- Light：光照组件（方向光 / 点光源，类型在检查器里切换）
+- Camera：摄像机组件（fov / near / far，视口内以视锥 Gizmo 显示朝向）
 - GameObject：名称 + uuid + 激活 + 组件列表 + 父子层级
 - Scene：全部物体（扁平列表，父子靠 parent 引用）+ 增删/设父/取世界变换
 

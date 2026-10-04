@@ -61,7 +61,7 @@ except Exception:
 
 from .orbitCamera import OrbitCamera
 from ..core.materialCache import loadMaterial
-from ..core.scene import Light, MeshRenderer, worldMatrix
+from ..core.scene import Camera, Light, MeshRenderer, worldMatrix
 from ..core.meshCache import getMesh
 
 # ---- Win32 / WGL 常量 ----
@@ -304,7 +304,7 @@ class GLViewport(tk.Frame):
         gluLookAt(eye[0], eye[1], eye[2], center[0], center[1], center[2], up[0], up[1], up[2])
 
     def renderFrame(self):
-        """渲染一帧（自检可直调）。"""
+        """渲染一帧并计数（自检 / 外部事件可直调；空闲暂停模式下同样有效）。"""
         if not self._running:
             return
         if not self._ensureContext():
@@ -321,6 +321,7 @@ class GLViewport(tk.Frame):
         self._drawScene()
         self._drawGizmo()
         self._gdi32.SwapBuffers(self._hdc)
+        self.frameCount += 1
 
     def _setupLights(self):
         """把场景中的 Light 组件映射到固定管线光照（GL_LIGHT0..N）。
@@ -435,13 +436,16 @@ class GLViewport(tk.Frame):
         glDisable(GL_LIGHTING)
         glDisable(GL_DEPTH_TEST)   # Gizmo 始终可见（不穿模）
         size = self._gizmoSize(origin)
-        glLineWidth(2.0)
         if self.gizmoMode == "rotate":
+            glLineWidth(3.5)   # 旋转圆环加粗（原来 2px 太细难抓）
             self._drawRotateGizmo(origin, size)
         elif self.gizmoMode == "scale":
+            glLineWidth(2.0)
             self._drawScaleGizmo(origin, size)
         else:
+            glLineWidth(2.0)
             self._drawMoveGizmo(origin, size)
+        self._drawCameraFrustum()   # 选中带 Camera 组件的物体 → 画视锥朝向
         glLineWidth(1.0)
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
@@ -493,6 +497,65 @@ class GLViewport(tk.Frame):
         return {"x": np.array([1.0, 0.0, 0.0]),
                 "y": np.array([0.0, 1.0, 0.0]),
                 "z": np.array([0.0, 0.0, 1.0])}[axis]
+
+    def _drawCameraFrustum(self):
+        """选中物体带 Camera 组件 → 画视锥（朝向 + 近/远平面框），提示相机面向哪里。
+
+        朝向 = 物体本地 -Z（相机默认注视方向）经世界矩阵变换；
+        视锥按 Camera 组件 fov（垂直角，固定 16:9 宽高比）与 near/far 计算。
+        淡青色，线框，不参与光照。"""
+        obj = self.selected
+        if obj is None:
+            return
+        cam = obj.getComponent(Camera)
+        if cam is None:
+            return
+        m = worldMatrix(obj)
+        pos = m[:3, 3]
+        fwd = -(m[:3, :3] @ np.array([0.0, 0.0, 1.0]))      # 本地 -Z → 世界朝向
+        n = float(np.linalg.norm(fwd))
+        if n < 1e-9:
+            return
+        fwd = fwd / n
+        up = m[:3, :3] @ np.array([0.0, 1.0, 0.0])
+        right = np.cross(fwd, up)
+        rn = float(np.linalg.norm(right))
+        if rn < 1e-9:
+            right = np.array([1.0, 0.0, 0.0])
+            rn = 1.0
+        right = right / rn
+        up2 = np.cross(right, fwd)                          # 正交上方向
+
+        fov = max(float(cam.fov), 5.0)
+        aspect = 16.0 / 9.0
+        halfV = math.tan(math.radians(fov / 2.0))
+        halfH = halfV * aspect
+        near = max(float(cam.near), 1e-3)
+        far = max(float(cam.far), near + 1e-3)
+
+        def corners(d):
+            hh, hv = halfH * d, halfV * d
+            return [pos + fwd * d + right * hh + up2 * hv,
+                    pos + fwd * d - right * hh + up2 * hv,
+                    pos + fwd * d - right * hh - up2 * hv,
+                    pos + fwd * d + right * hh - up2 * hv]
+
+        nearC, farC = corners(near), corners(far)
+        glColor3f(0.40, 0.95, 1.00)
+        glLineWidth(2.2)
+        glBegin(GL_LINES)
+        # 四角连线（视锥侧面）
+        for i in range(4):
+            glVertex3f(*nearC[i]); glVertex3f(*farC[i])
+        # 近平面框
+        for i in range(4):
+            glVertex3f(*nearC[i]); glVertex3f(*nearC[(i + 1) % 4])
+        # 远平面框
+        for i in range(4):
+            glVertex3f(*farC[i]); glVertex3f(*farC[(i + 1) % 4])
+        # 朝向中心线
+        glVertex3f(*pos); glVertex3f(*(pos + fwd * far))
+        glEnd()
 
     @staticmethod
     def _drawCone(tip, direction, length, color):
@@ -616,7 +679,7 @@ class GLViewport(tk.Frame):
         except Exception:
             return None
 
-    # ---- 帧循环 ----
+    # ---- 帧循环（空闲暂停：没有任何物体/相机运动时停止连续渲染） ----
     def _tick(self):
         if not self._running:
             return
@@ -626,16 +689,26 @@ class GLViewport(tk.Frame):
         try:
             self._applyFlyMove(dt)   # 浏览模式按键移动（dt 平滑，避免帧率抖动）
             self.renderFrame()
-            self.frameCount += 1
         except Exception:
             pass                    # 单帧异常不中断渲染循环
-        self._after = self.after(REF, self._tick)
+        if self._flyActive or self._chars:
+            # 相机仍在运动（浏览转头 / 按键移动）→ 保持渲染循环
+            self._after = self.after(REF, self._tick)
+        else:
+            # 空闲：暂停循环，等待交互事件直接 renderFrame 或 _ensureLoop 重启
+            self._after = None
+
+    def _ensureLoop(self):
+        """交互开始（浏览模式/按键移动）时重启渲染循环。"""
+        if self._running and self._after is None:
+            self._after = self.after(REF, self._tick)
 
     # ---- 浏览模式（中键）----
     def _onPressMiddle(self, event):
         self._flyActive = True
         self._hideCursor(True)
         self.focus_set()
+        self._ensureLoop()   # 浏览模式开始：恢复连续渲染
         # 以“当前实际光标位置”为转头基准（物理屏幕坐标，兼容高 DPI）
         self._flyRefX, self._flyRefY = self._cursorPos()
         self._warpToCenter()
@@ -696,6 +769,8 @@ class GLViewport(tk.Frame):
         for action, key in self.keyBinds.items():
             if event.keysym.lower() == key.lower():
                 self._chars.add(action)
+                if self._flyActive:
+                    self._ensureLoop()   # 浏览模式按键移动：恢复连续渲染
                 break
 
     def focusSelected(self):
