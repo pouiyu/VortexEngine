@@ -166,12 +166,25 @@ class GLViewport(tk.Frame):
         self.bind("<ButtonPress-2>", self._onPressMiddle)
         self.bind("<B2-Motion>", self._onMiddleMotion)
         self.bind("<ButtonRelease-2>", self._onReleaseMiddle)
+        self.bind("<ButtonPress-3>", self._onPressRight)
+        self.bind("<ButtonRelease-3>", self._onReleaseRight)
+        self.bind("<Motion>", self._onMotion)
         self.bind("<MouseWheel>", self._onWheel)
         # 按键（浏览模式用）
         self.bind("<KeyPress>", self._onKeyPress)
         self.bind("<KeyRelease>", self._onKeyRelease)
 
         self.after(50, self.initGL)
+
+    # ---- 输入采样（V5.4：播放时脚本读键盘/鼠标；非播放无害） ----
+    @staticmethod
+    def _rec():
+        """延迟导入 runtime 输入采样（避免渲染模块依赖脚本运行时）。"""
+        try:
+            from ..core import runtime as _rt
+            return _rt
+        except Exception:
+            return None
 
     # ---- OpenGL 上下文 ----
     def initGL(self):
@@ -728,6 +741,9 @@ class GLViewport(tk.Frame):
 
     # ---- 浏览模式（中键）----
     def _onPressMiddle(self, event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseDown(2, event.x, event.y)
         if self.playMode:
             return
         self._flyActive = True
@@ -739,6 +755,9 @@ class GLViewport(tk.Frame):
         self._flyRefX, self._flyRefY = self._viewportCenter()
 
     def _onMiddleMotion(self, event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseMove(event.x, event.y)
         if self.playMode or not self._flyActive:
             return
         x, y = self._cursorPos()
@@ -751,6 +770,9 @@ class GLViewport(tk.Frame):
         # 不会累积漂移 → 旋转匀速、方向一致
 
     def _onReleaseMiddle(self, _event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseUp(2)
         if self.playMode:
             return
         self._flyActive = False
@@ -777,6 +799,9 @@ class GLViewport(tk.Frame):
             self.onGizmoModeChanged(mode)
 
     def _onKeyPress(self, event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordKeyDown(event.keysym)
         if self.playMode:
             return
         # W/E/R 切换 Gizmo 模式（浏览模式激活时交给 WASD 移动）
@@ -810,6 +835,9 @@ class GLViewport(tk.Frame):
         self.renderFrame()
 
     def _onKeyRelease(self, event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordKeyUp(event.keysym)
         if self.playMode:
             return
         for action, key in self.keyBinds.items():
@@ -819,6 +847,9 @@ class GLViewport(tk.Frame):
 
     # ---- 左键：旋转 / 平移(Shift) / Gizmo / 点击拾取 ----
     def _onPressLeft(self, event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseDown(1, event.x, event.y)
         if self.playMode:
             return
         self._pressX, self._pressY = event.x, event.y
@@ -842,6 +873,9 @@ class GLViewport(tk.Frame):
                 self._moved = True   # 视为拖拽，不触发拾取
 
     def _onDragLeft(self, event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseMove(event.x, event.y)
         if self.playMode:
             return
         """按住 Shift=平移视野；命中 Gizmo=变换物体；否则=环绕旋转。"""
@@ -871,6 +905,9 @@ class GLViewport(tk.Frame):
         self.renderFrame()   # 相机移动后立即刷新画面
 
     def _onReleaseLeft(self, event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseUp(1)
         if self.playMode:
             return
         if not self._moved and self._pressX is not None:
@@ -1066,7 +1103,27 @@ class GLViewport(tk.Frame):
         except Exception:
             return None, None
 
+    def _onPressRight(self, event):
+        """右键按下：只记录脚本输入（编辑器未用右键功能）。"""
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseDown(3, event.x, event.y)
+
+    def _onReleaseRight(self, _event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseUp(3)
+
+    def _onMotion(self, event):
+        """鼠标移动：记录位置/位移（脚本 getMousePosition/getMouseDelta 用）。"""
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseMove(event.x, event.y)
+
     def _onWheel(self, event):
+        rt = self._rec()
+        if rt is not None:
+            rt.recordMouseWheel(event.delta)
         if self.playMode:
             return
         self.camera.zoom(event.delta)

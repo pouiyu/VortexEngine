@@ -744,7 +744,27 @@ def _testDataLayer():
     rsc = rest2.findByUuid(scr.uuid)
     rscComp = rsc.getComponent(Script) if rsc else None
     assert rscComp is not None and rscComp.script == "Scripts/转圈.vpy", "Script 组件未序列化/恢复"
-    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返 / 内置网格 / Script")
+    # V5.4：输入 API 状态机（按键/鼠标，与视口事件回调同实现）
+    from .core import runtime as _rt
+    _rt._beginInputFrame()
+    _rt.recordKeyDown("w")
+    assert _rt.isKeyDown("w") and _rt.isKeyPressed("w"), "按键按下状态错误"
+    _rt._beginInputFrame()
+    assert _rt.isKeyDown("w") and not _rt.isKeyPressed("w"), "下一帧 pressed 未清空"
+    _rt.recordKeyUp("w")
+    assert not _rt.isKeyDown("w") and _rt.isKeyReleased("w"), "按键松开状态错误"
+    _rt.recordMouseMove(10, 20)
+    _rt.recordMouseMove(16, 26)
+    d = _rt.getMouseDelta()
+    assert d == (16, 26), f"鼠标位移错误 {d}"
+    _rt.recordMouseDown(1, 30, 40)
+    assert _rt.isMouseDown(1) and _rt.isMousePressed(1), "鼠标按下状态错误"
+    assert _rt.getMousePosition() == (30, 40), "鼠标位置错误"
+    _rt.recordMouseWheel(120)
+    assert _rt.getMouseWheel() == 120, "滚轮状态错误"
+    _rt._beginInputFrame()
+    assert not _rt.isMousePressed(1) and _rt.getMouseWheel() == 0, "输入帧刷新错误"
+    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返 / 内置网格 / Script / 输入API")
 
 
 def selftest():

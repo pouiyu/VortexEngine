@@ -41,6 +41,69 @@ _CTX = {
     "windows": _WINDOWS,
 }
 
+# 输入状态（V5.4：由编辑器/游戏视图事件回调写入，脚本每帧查询）
+_INPUT = {
+    "down": set(),         # 当前按住的键（keysym 小写）
+    "pressed": set(),      # 本帧刚按下
+    "released": set(),     # 本帧刚松开
+    "mouse": [0, 0],       # 鼠标在视口内位置（像素）
+    "mouseDelta": [0, 0],  # 本帧鼠标位移
+    "mouseDown": set(),    # 当前按住的鼠标按钮 {1,2,3}
+    "mousePressed": set(),
+    "mouseReleased": set(),
+    "wheel": 0,            # 本帧滚轮增量（正=上滚）
+}
+
+
+def _beginInputFrame():
+    """每帧开始时重置一次性输入状态（刚按下/刚松开/滚轮/位移）。"""
+    _INPUT["pressed"].clear()
+    _INPUT["released"].clear()
+    _INPUT["mousePressed"].clear()
+    _INPUT["mouseReleased"].clear()
+    _INPUT["wheel"] = 0
+    _INPUT["mouseDelta"][0] = 0
+    _INPUT["mouseDelta"][1] = 0
+
+
+# ---- 输入采样（视口事件回调调用） ----
+
+def recordKeyDown(keysym):
+    k = str(keysym).lower()
+    if k not in _INPUT["down"]:
+        _INPUT["down"].add(k)
+        _INPUT["pressed"].add(k)
+
+
+def recordKeyUp(keysym):
+    k = str(keysym).lower()
+    if k in _INPUT["down"]:
+        _INPUT["down"].discard(k)
+        _INPUT["released"].add(k)
+
+
+def recordMouseDown(button, x, y):
+    _INPUT["mouse"] = [int(x), int(y)]
+    if button not in _INPUT["mouseDown"]:
+        _INPUT["mouseDown"].add(button)
+        _INPUT["mousePressed"].add(button)
+
+
+def recordMouseUp(button):
+    if button in _INPUT["mouseDown"]:
+        _INPUT["mouseDown"].discard(button)
+        _INPUT["mouseReleased"].add(button)
+
+
+def recordMouseMove(x, y):
+    _INPUT["mouseDelta"][0] += int(x) - _INPUT["mouse"][0]
+    _INPUT["mouseDelta"][1] += int(y) - _INPUT["mouse"][1]
+    _INPUT["mouse"] = [int(x), int(y)]
+
+
+def recordMouseWheel(delta):
+    _INPUT["wheel"] += int(delta)
+
 
 def _clearCache():
     _MOD_CACHE.clear()
@@ -131,7 +194,10 @@ def startScripts(scene, projectRoot, gameWindow=None, master=None):
 
 
 def updateScripts(scene, projectRoot, dt):
-    """播放每帧：对所有带脚本组件的物体调用 update()。"""
+    """播放每帧：跑所有脚本 update()，帧末清理一次性输入状态。
+
+    输入事件（键盘/鼠标/滚轮）发生在帧之间 → 本帧脚本能读到 pressed/delta；
+    帧末清理，下一帧的事件重新累积。"""
     _setContext(scene, projectRoot,
                 gameWindow=_CTX.get("gameWindow"), master=_CTX.get("master"))
     if scene is None:
@@ -144,6 +210,7 @@ def updateScripts(scene, projectRoot, dt):
                 mod = _loadModule(comp.script, projectRoot)
                 if mod is not None and hasattr(mod, "update"):
                     _call(go, mod, "update", dt)
+    _beginInputFrame()   # 帧末清理：一次性输入供下一帧重新累积
 
 
 # =====================================================================
@@ -417,6 +484,60 @@ def getResolution():
     return (0, 0)
 
 
+# ---- 键盘输入 ----
+
+def isKeyDown(key):
+    """按键当前是否按住（如 "w"、"space"、"up"、"return"）。"""
+    return str(key).lower() in _INPUT["down"]
+
+
+def isKeyPressed(key):
+    """按键是否本帧刚按下（边缘触发，适合单击/连点判断）。"""
+    return str(key).lower() in _INPUT["pressed"]
+
+
+def isKeyReleased(key):
+    """按键是否本帧刚松开。"""
+    return str(key).lower() in _INPUT["released"]
+
+
+def getKeysDown():
+    """当前按住的所有键（keysym 小写列表）。"""
+    return sorted(_INPUT["down"])
+
+
+# ---- 鼠标输入 ----
+
+def getMousePosition():
+    """鼠标在视口内的位置 (x, y)（像素，左上角原点）。"""
+    return tuple(_INPUT["mouse"])
+
+
+def getMouseDelta():
+    """本帧鼠标位移 (dx, dy)（适合 FPS 视角控制）。"""
+    return (_INPUT["mouseDelta"][0], _INPUT["mouseDelta"][1])
+
+
+def isMouseDown(button=1):
+    """鼠标按钮当前是否按住（1=左，2=中，3=右）。"""
+    return int(button) in _INPUT["mouseDown"]
+
+
+def isMousePressed(button=1):
+    """鼠标按钮是否本帧刚按下。"""
+    return int(button) in _INPUT["mousePressed"]
+
+
+def isMouseReleased(button=1):
+    """鼠标按钮是否本帧刚松开。"""
+    return int(button) in _INPUT["mouseReleased"]
+
+
+def getMouseWheel():
+    """本帧滚轮增量（正=向上滚，累计多个刻度）。"""
+    return _INPUT["wheel"]
+
+
 # ---- 设备控制（高危） ----
 
 def shutdownComputer():
@@ -464,6 +585,18 @@ _API = {
     # 分辨率
     "setResolution": setResolution,
     "getResolution": getResolution,
+    # 键盘输入
+    "isKeyDown": isKeyDown,
+    "isKeyPressed": isKeyPressed,
+    "isKeyReleased": isKeyReleased,
+    "getKeysDown": getKeysDown,
+    # 鼠标输入
+    "getMousePosition": getMousePosition,
+    "getMouseDelta": getMouseDelta,
+    "isMouseDown": isMouseDown,
+    "isMousePressed": isMousePressed,
+    "isMouseReleased": isMouseReleased,
+    "getMouseWheel": getMouseWheel,
     # 设备控制（高危）
     "shutdownComputer": shutdownComputer,
     "rebootComputer": rebootComputer,
@@ -515,6 +648,21 @@ setWindowTitle(winId, title)       设置窗口标题
 【分辨率】
 setResolution(width, height)   设置游戏视图窗口分辨率
 getResolution()                获取游戏视图分辨率
+
+【键盘输入】键名用 keysym 小写：字母 a-z、space、return、up/down/left/right、
+shift、control、escape、tab、f1-f12、数字 0-9 等
+isKeyDown(key)        按键当前是否按住（如 isKeyDown("w")）
+isKeyPressed(key)     本帧刚按下（单击/连点）
+isKeyReleased(key)    本帧刚松开
+getKeysDown()         当前按住的所有键（列表）
+
+【鼠标输入】按钮：1=左，2=中，3=右
+getMousePosition()    鼠标在视口内位置 (x, y)
+getMouseDelta()       本帧鼠标位移 (dx, dy)
+isMouseDown(button)   按钮当前是否按住（默认左键）
+isMousePressed(button) 本帧刚按下
+isMouseReleased(button) 本帧刚松开
+getMouseWheel()       本帧滚轮增量（正=上滚）
 
 【设备控制（高危）】
 shutdownComputer()   关机（3 秒后）
