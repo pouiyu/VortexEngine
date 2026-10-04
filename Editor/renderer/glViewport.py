@@ -123,6 +123,8 @@ class GLViewport(tk.Frame):
         self.selected = None              # 主选中物体（黄色描边 + Gizmo 作用对象）
         self.selectedSet = set()          # 多选集合（Shift 追加；含主选中）
         self.projectRoot = projectRoot    # 项目根（解析 Resources 下 .obj 用）
+        self.playMode = False             # 播放窗口视图：隐藏 Gizmo/网格/交互，用场景相机
+        self.sceneCameraObj = None        # 播放视图用的场景相机物体（带 Camera 组件）
         self.camera = OrbitCamera()
         self.keyBinds = dict(DEFAULT_KEYS)
         if prefs:
@@ -292,18 +294,39 @@ class GLViewport(tk.Frame):
 
     # ---- 渲染 ----
     def _setupView(self):
-        """按当前窗口与相机设置投影/模型矩阵（渲染与拾取共用）。"""
+        """按当前窗口与相机设置投影/模型矩阵（渲染与拾取共用）。
+
+        播放视图（playMode）：用场景相机物体（Camera 组件）的位置/朝向/fov/near/far，
+        即「游戏视图」从场景摄像机看世界；否则用编辑器轨道相机。"""
         w, h = self.winfo_width(), self.winfo_height()
         if w <= 0 or h <= 0:
             return
         glViewport(0, 0, w, h)
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        gluPerspective(50.0, w / h, 0.1, 2000.0)
+        cam = None
+        if self.playMode and self.sceneCameraObj is not None:
+            cam = self.sceneCameraObj.getComponent(Camera)
+        fov = max(float(cam.fov), 5.0) if cam is not None else 50.0
+        near = max(float(cam.near), 0.01) if cam is not None else 0.1
+        far = max(float(cam.far), near + 1.0) if cam is not None else 2000.0
+        gluPerspective(fov, w / h, near, far)
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
-        eye, center, up = self.camera.lookAtArgs()
-        gluLookAt(eye[0], eye[1], eye[2], center[0], center[1], center[2], up[0], up[1], up[2])
+        if cam is not None:
+            m = worldMatrix(self.sceneCameraObj)
+            eye = m[:3, 3]
+            fwd = -(m[:3, :3] @ np.array([0.0, 0.0, 1.0]))
+            fn = float(np.linalg.norm(fwd))
+            fwd = fwd / fn if fn > 1e-9 else np.array([0.0, 0.0, -1.0])
+            up = m[:3, :3] @ np.array([0.0, 1.0, 0.0])
+            gluLookAt(eye[0], eye[1], eye[2],
+                      eye[0] + fwd[0], eye[1] + fwd[1], eye[2] + fwd[2],
+                      up[0], up[1], up[2])
+        else:
+            eye, center, up = self.camera.lookAtArgs()
+            gluLookAt(eye[0], eye[1], eye[2], center[0], center[1], center[2],
+                      up[0], up[1], up[2])
 
     def renderFrame(self):
         """渲染一帧并计数（自检 / 外部事件可直调）。"""
@@ -318,10 +341,12 @@ class GLViewport(tk.Frame):
         glEnable(GL_DEPTH_TEST)
         glDepthFunc(GL_LEQUAL)
         self._setupView()
-        self._drawGrid()
+        if not self.playMode:
+            self._drawGrid()
         self._setupLights()
         self._drawScene()
-        self._drawGizmo()
+        if not self.playMode:
+            self._drawGizmo()
         self._gdi32.SwapBuffers(self._hdc)
         self.frameCount += 1
 
@@ -548,7 +573,7 @@ class GLViewport(tk.Frame):
 
         nearC, farC = corners(near), corners(far)
         glColor3f(0.40, 0.95, 1.00)
-        glLineWidth(2.2)
+        glLineWidth(1.0)
         glBegin(GL_LINES)
         # 四角连线（视锥侧面）
         for i in range(4):
@@ -703,6 +728,8 @@ class GLViewport(tk.Frame):
 
     # ---- 浏览模式（中键）----
     def _onPressMiddle(self, event):
+        if self.playMode:
+            return
         self._flyActive = True
         self._hideCursor(True)
         self.focus_set()
@@ -712,7 +739,7 @@ class GLViewport(tk.Frame):
         self._flyRefX, self._flyRefY = self._viewportCenter()
 
     def _onMiddleMotion(self, event):
-        if not self._flyActive:
+        if self.playMode or not self._flyActive:
             return
         x, y = self._cursorPos()
         dx, dy = x - self._flyRefX, y - self._flyRefY
@@ -724,6 +751,8 @@ class GLViewport(tk.Frame):
         # 不会累积漂移 → 旋转匀速、方向一致
 
     def _onReleaseMiddle(self, _event):
+        if self.playMode:
+            return
         self._flyActive = False
         self._hideCursor(False)
 
@@ -748,6 +777,8 @@ class GLViewport(tk.Frame):
             self.onGizmoModeChanged(mode)
 
     def _onKeyPress(self, event):
+        if self.playMode:
+            return
         # W/E/R 切换 Gizmo 模式（浏览模式激活时交给 WASD 移动）
         if not self._flyActive:
             k = event.keysym.lower()
@@ -779,6 +810,8 @@ class GLViewport(tk.Frame):
         self.renderFrame()
 
     def _onKeyRelease(self, event):
+        if self.playMode:
+            return
         for action, key in self.keyBinds.items():
             if event.keysym.lower() == key.lower():
                 self._chars.discard(action)
@@ -786,6 +819,8 @@ class GLViewport(tk.Frame):
 
     # ---- 左键：旋转 / 平移(Shift) / Gizmo / 点击拾取 ----
     def _onPressLeft(self, event):
+        if self.playMode:
+            return
         self._pressX, self._pressY = event.x, event.y
         self._moved = False
         self.focus_set()
@@ -807,6 +842,8 @@ class GLViewport(tk.Frame):
                 self._moved = True   # 视为拖拽，不触发拾取
 
     def _onDragLeft(self, event):
+        if self.playMode:
+            return
         """按住 Shift=平移视野；命中 Gizmo=变换物体；否则=环绕旋转。"""
         if self._pressX is None:
             self._pressX, self._pressY = event.x, event.y
@@ -834,6 +871,8 @@ class GLViewport(tk.Frame):
         self.renderFrame()   # 相机移动后立即刷新画面
 
     def _onReleaseLeft(self, event):
+        if self.playMode:
+            return
         if not self._moved and self._pressX is not None:
             # 轻微位移 → 视为点击，拾取物体（Shift = 追加/移除多选）
             obj = self.pickObject(event.x, event.y)
@@ -1028,6 +1067,8 @@ class GLViewport(tk.Frame):
             return None, None
 
     def _onWheel(self, event):
+        if self.playMode:
+            return
         self.camera.zoom(event.delta)
         self.renderFrame()   # 相机缩放后立即刷新画面
 

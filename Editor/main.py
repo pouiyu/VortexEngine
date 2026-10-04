@@ -106,6 +106,7 @@ class EditorApp:
         self._lastUndoTime = 0.0        # 变换类撤销合并用
         self._playing = False           # 播放模式（V5：脚本每帧执行）
         self._playSnapshot = None       # 播放开始时的场景快照（停止时恢复）
+        self._playWindow = None         # 播放窗口（游戏视图）
         self._unsaved = False           # 未保存修改标记（标题显示 *）
         self._updatingTitle = False
         self._updateTitle()
@@ -156,24 +157,40 @@ class EditorApp:
             self._startPlay()
 
     def _startPlay(self):
-        """进入播放：快照场景 → 调所有脚本 start → 标题/按钮进入播放态。"""
+        """进入播放：快照场景 → 调所有脚本 start → 弹出播放窗口 → 标题/按钮进入播放态。"""
         if self._playing:
             return
         from .core.serializer import serializeScene
         from .core.runtime import startScripts, _clearCache
+        from .ui.playWindow import PlayWindow
         _clearCache()                       # 重新加载脚本（热更新编辑内容）
         self._playSnapshot = serializeScene(self.scene)
         self._playing = True
         startScripts(self.scene, self.projectRoot)
         self.toolbar.setPlaying(True)
+        self._playWindow = PlayWindow(self.root, self.scene, projectRoot=self.projectRoot,
+                                      onClose=self._stopPlay)
         self.status.showMessage("▶ 播放中（F5 或按钮停止，播放修改不会保存）")
         self._updateTitle()
 
     def _stopPlay(self):
-        """停止播放：恢复进入前快照（丢弃播放期间的修改），刷新所有面板。"""
+        """停止播放：恢复进入前快照（丢弃播放期间的修改），关播放窗口，刷新所有面板。"""
         if not self._playing:
             return
         from .core.serializer import deserializeScene
+        if self._playWindow is not None:
+            w = self._playWindow
+            self._playWindow = None
+            try:
+                if w.winfo_exists():
+                    w._closed = True
+                    try:
+                        w.viewport.dispose()
+                    except Exception:
+                        pass
+                    w.destroy()
+            except Exception:
+                pass
         self.scene = deserializeScene(self._playSnapshot) if self._playSnapshot else self.scene
         self._playSnapshot = None
         self._playing = False
@@ -198,7 +215,9 @@ class EditorApp:
             updateScripts(self.scene, self.projectRoot, dt)
 
     def _onClose(self):
-        """退出：有未保存修改时询问是否保存。"""
+        """退出：有未保存修改时询问是否保存；播放中先停止（关播放窗口）。"""
+        if self._playing:
+            self._stopPlay()
         if self._unsaved:
             choice = messagebox.askyesnocancel(
                 "未保存", f"「{self.projectName}」有未保存的修改，是否保存？")
@@ -254,7 +273,7 @@ class EditorApp:
             "tkinter 界面 + OpenGL（WGL 嵌入）3D 视口\n"
             "GameObject + 组件（变换 / 网格渲染器 / 光照 / 摄像机 / 脚本）\n"
             "资源系统：.obj 模型 / .vmat 材质 / .vscene 场景 / .vpy 脚本\n"
-            "播放模式：▶ 播放（F5）执行物体脚本，停止恢复播放前场景\n"
+            "播放模式：▶ 播放（F5）执行物体脚本，弹出游戏视图窗口，停止恢复播放前场景\n"
             "下一阶段：V6 运行时导出",
         )
 
@@ -747,9 +766,11 @@ def selftest():
         assert abs((go.transform.rotation[1] - r0) - 90.0) < 1e-6, "脚本 update 未执行"
         app._togglePlay()                       # 进入播放
         assert app._playing, "播放未进入"
+        assert app._playWindow is not None, "播放窗口未创建"
         app.scene.findByUuid(go.uuid).transform.position[0] = 99.0   # 播放中修改
         app._togglePlay()                       # 停止 → 恢复播放前快照
         assert not app._playing, "播放未停止"
+        assert app._playWindow is None, "播放窗口未销毁"
         restored = app.scene.findByUuid(go.uuid)
         assert restored is not None and abs(restored.transform.position[0] - 0.0) < 1e-6, \
             "停止播放未恢复播放前场景"
