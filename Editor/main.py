@@ -104,6 +104,8 @@ class EditorApp:
         self.selectedSet = set()        # 多选集合（Shift 追加；含主选中）
         self._undoStack = []            # 场景撤销栈（序列化快照）
         self._lastUndoTime = 0.0        # 变换类撤销合并用
+        self._playing = False           # 播放模式（V5：脚本每帧执行）
+        self._playSnapshot = None       # 播放开始时的场景快照（停止时恢复）
         self._unsaved = False           # 未保存修改标记（标题显示 *）
         self._updatingTitle = False
         self._updateTitle()
@@ -115,11 +117,13 @@ class EditorApp:
         self._buildLayout()
 
         # 快捷键：Delete 删除选中（焦点在输入框时交给输入框）；Ctrl+S/O 保存/打开；
-        # Ctrl+Z 撤销场景（焦点在资源树时由项目面板的 <Control-z> 优先处理资源撤销）
+        # Ctrl+Z 撤销场景（焦点在资源树时由项目面板的 <Control-z> 优先处理资源撤销）；
+        # F5 播放 / 停止（V5 播放模式）
         root.bind("<Delete>", lambda e: self.deleteSelected())
         root.bind("<Control-s>", lambda e: self.saveScene())
         root.bind("<Control-o>", lambda e: self.openScene())
         root.bind("<Control-z>", self._undoScene)
+        root.bind("<F5>", lambda e: self._togglePlay())
         # 退出前检查未保存修改
         root.protocol("WM_DELETE_WINDOW", self._onClose)
 
@@ -131,7 +135,8 @@ class EditorApp:
     # ---- 未保存标记 ----
     def _updateTitle(self):
         star = " *" if self._unsaved else ""
-        self.root.title(f"{APP_NAME} — {self.projectName}{star}")
+        play = " — ▶ 播放中" if self._playing else ""
+        self.root.title(f"{APP_NAME} — {self.projectName}{star}{play}")
 
     def markUnsaved(self):
         """任意场景修改（变换/结构/增删/材质引用等）→ 标题加 *。"""
@@ -141,6 +146,56 @@ class EditorApp:
     def clearUnsaved(self):
         self._unsaved = False
         self._updateTitle()
+
+    # ---- 播放模式（V5：脚本每帧执行） ----
+    def _togglePlay(self):
+        """工具栏按钮 / F5：播放 ⇄ 停止。"""
+        if self._playing:
+            self._stopPlay()
+        else:
+            self._startPlay()
+
+    def _startPlay(self):
+        """进入播放：快照场景 → 调所有脚本 start → 标题/按钮进入播放态。"""
+        if self._playing:
+            return
+        from .core.serializer import serializeScene
+        from .core.runtime import startScripts, _clearCache
+        _clearCache()                       # 重新加载脚本（热更新编辑内容）
+        self._playSnapshot = serializeScene(self.scene)
+        self._playing = True
+        startScripts(self.scene, self.projectRoot)
+        self.toolbar.setPlaying(True)
+        self.status.showMessage("▶ 播放中（F5 或按钮停止，播放修改不会保存）")
+        self._updateTitle()
+
+    def _stopPlay(self):
+        """停止播放：恢复进入前快照（丢弃播放期间的修改），刷新所有面板。"""
+        if not self._playing:
+            return
+        from .core.serializer import deserializeScene
+        self.scene = deserializeScene(self._playSnapshot) if self._playSnapshot else self.scene
+        self._playSnapshot = None
+        self._playing = False
+        self.viewport.scene = self.scene
+        self.hierarchy.scene = self.scene
+        self.inspector.scene = self.scene
+        self.selected = None
+        self.selectedSet = set()
+        self.viewport.setSelected(None)
+        self.viewport.setSelectedSet(set())
+        self.inspector.showObject(None)
+        self.hierarchy.refresh()
+        self.viewport.renderFrame()
+        self.toolbar.setPlaying(False)
+        self.status.showMessage("⏹ 已停止播放（场景已恢复播放前状态）")
+        self._updateTitle()
+
+    def _onScriptTick(self, dt):
+        """渲染循环每帧回调：播放中执行所有脚本的 update(obj, dt)。"""
+        if self._playing:
+            from .core.runtime import updateScripts
+            updateScripts(self.scene, self.projectRoot, dt)
 
     def _onClose(self):
         """退出：有未保存修改时询问是否保存。"""
@@ -195,11 +250,12 @@ class EditorApp:
     def _showAbout(self):
         messagebox.showinfo(
             APP_NAME,
-            "Vortex 游戏编辑器（V4 资源系统）\n"
+            "Vortex 游戏编辑器（V5 脚本 + 播放模式）\n"
             "tkinter 界面 + OpenGL（WGL 嵌入）3D 视口\n"
-            "GameObject + 组件（变换 / 网格渲染器 / 光照 / 摄像机）\n"
-            "资源系统：.obj 模型 / .vmat 材质 / .vscene 场景\n"
-            "下一阶段：V5 脚本组件与播放模式",
+            "GameObject + 组件（变换 / 网格渲染器 / 光照 / 摄像机 / 脚本）\n"
+            "资源系统：.obj 模型 / .vmat 材质 / .vscene 场景 / .vpy 脚本\n"
+            "播放模式：▶ 播放（F5）执行物体脚本，停止恢复播放前场景\n"
+            "下一阶段：V6 运行时导出",
         )
 
     # ---- 布局 ----
@@ -210,7 +266,8 @@ class EditorApp:
 
         # 工具栏
         toolbar = Toolbar(self.root, projectName=self.projectName,
-                          onCreate=self.createObject, onGizmoMode=self._onGizmoMode)
+                          onCreate=self.createObject, onGizmoMode=self._onGizmoMode,
+                          onPlay=self._togglePlay)
         toolbar.pack(fill=tk.X)
         self.toolbar = toolbar
 
@@ -236,7 +293,8 @@ class EditorApp:
         self.viewport = GLViewport(body, scene=self.scene, onSelect=self._onSelect,
                                    prefs=self.prefs, projectRoot=self.projectRoot,
                                    onTransform=self._onTransform,
-                                   onGizmoModeChanged=self._onGizmoModeChanged)
+                                   onGizmoModeChanged=self._onGizmoModeChanged,
+                                   onScriptUpdate=self._onScriptTick)
         self.viewport.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=2)
 
         self.inspector = InspectorPanel(body, scene=self.scene,
@@ -389,7 +447,9 @@ class EditorApp:
     def _switchScene(self, scene, scenePath=None):
         """把新场景接到所有面板（视口/层级/检查器）并刷新。
 
-        切换前若有未保存修改先询问（保存 / 不保存 / 取消）。"""
+        切换前先停止播放（V5）；若有未保存修改先询问（保存 / 不保存 / 取消）。"""
+        if self._playing:
+            self._stopPlay()
         if self._unsaved:
             choice = messagebox.askyesnocancel(
                 "未保存", f"当前场景有未保存的修改，是否先保存？")
@@ -602,7 +662,17 @@ def _testDataLayer():
         assert data is not None, f"内置网格 {meshName} 加载失败"
         assert len(data.indices) > 0 and len(data.indices) % 3 == 0, f"{meshName} 无三角面"
         assert data.vertices.shape[1] == 3 and data.normals.shape[1] == 3, f"{meshName} 顶点/法线维数错误"
-    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返 / 内置网格")
+    # V5：Script 组件序列化往返
+    from .core.scene import Script
+    scr = GameObject(name="脚本物")
+    scr.addComponent(Script(script="Scripts/转圈.vpy"))
+    scene.addObject(scr)
+    data2 = serializeScene(scene)
+    rest2 = deserializeScene(data2)
+    rsc = rest2.findByUuid(scr.uuid)
+    rscComp = rsc.getComponent(Script) if rsc else None
+    assert rscComp is not None and rscComp.script == "Scripts/转圈.vpy", "Script 组件未序列化/恢复"
+    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返 / 内置网格 / Script")
 
 
 def selftest():
@@ -657,7 +727,33 @@ def selftest():
             root.update()
             time.sleep(0.05)
         assert vp.frameCount > fc1, "连续渲染循环未运行"
-        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染 / 拾取 / 连续渲染 / 图标（{ver}）")
+        # V5：脚本执行（start/update）与播放快照恢复
+        from .core.runtime import _clearCache, startScripts, updateScripts
+        from .core.scene import Script
+        (proj / "Resources" / "Scripts").mkdir(exist_ok=True)
+        (proj / "Resources" / "Scripts" / "转圈.vpy").write_text(
+            "def start(obj):\n    obj._started = True\n\n"
+            "def update(obj, dt):\n    obj.transform.rotation[1] += 90 * dt\n",
+            encoding="utf-8")
+        go = GameObject(name="转盘")
+        go.addComponent(MeshRenderer(mesh="cube", material="default"))
+        go.addComponent(Script(script="Scripts/转圈.vpy"))
+        app.scene.addObject(go)
+        _clearCache()
+        startScripts(app.scene, proj)
+        assert getattr(go, "_started", False), "脚本 start 未调用"
+        r0 = go.transform.rotation[1]
+        updateScripts(app.scene, proj, 1.0)
+        assert abs((go.transform.rotation[1] - r0) - 90.0) < 1e-6, "脚本 update 未执行"
+        app._togglePlay()                       # 进入播放
+        assert app._playing, "播放未进入"
+        app.scene.findByUuid(go.uuid).transform.position[0] = 99.0   # 播放中修改
+        app._togglePlay()                       # 停止 → 恢复播放前快照
+        assert not app._playing, "播放未停止"
+        restored = app.scene.findByUuid(go.uuid)
+        assert restored is not None and abs(restored.transform.position[0] - 0.0) < 1e-6, \
+            "停止播放未恢复播放前场景"
+        print(f"[自检] 通过：窗口 / 项目识别 / WGL 上下文 / 渲染 / 拾取 / 连续渲染 / 脚本播放 / 图标（{ver}）")
         vp.dispose()
         root.destroy()
     return 0

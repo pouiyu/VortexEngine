@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""工具栏：项目名 + 创建物体下拉列表 + Gizmo 模式切换 + 播放占位。
+"""工具栏：项目名 + 创建物体下拉列表 + Gizmo 模式切换 + 播放/停止（V5）。
 
 创建物体改为「选择列表」：点按钮弹菜单，列出空物体 / 立方体 / 球体 /
 方向光 / 点光源（kind 交给 main.createObject 处理）。
 Gizmo 模式：移动 / 旋转 / 缩放三个互斥按钮（onGizmoMode 回调给 main）。
+播放：▶ 播放 / ⏹ 停止（onPlay 回调给 main，播放中按钮文字变化）。
 """
 
 from pathlib import Path
@@ -35,14 +36,16 @@ class Toolbar(ttk.Frame):
 
     onCreate(kind)：由 main 提供，kind 为 CREATE_ITEMS 中的值。
     onGizmoMode(mode)：由 main 提供，切换视口 Gizmo 模式。
+    onPlay()：由 main 提供，切换播放/停止。
     """
 
     def __init__(self, master, projectName="未命名项目", onCreate=None,
-                 onGizmoMode=None, **kw):
+                 onGizmoMode=None, onPlay=None, **kw):
         super().__init__(master, **kw)
         self._images = {}
         self.onCreate = onCreate
         self.onGizmoMode = onGizmoMode
+        self.onPlay = onPlay
         self._gizmoButtons = {}
         self._gizmoModeVar = tk.StringVar(value="move")
         ttk.Label(self, text=f"项目：{projectName}", padding=(8, 4)).pack(side=tk.LEFT)
@@ -52,7 +55,16 @@ class Toolbar(ttk.Frame):
         ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
         self._gizmoButtonsRow()
         ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
-        self._textButton("播放", None, hint="播放模式 V5 实现")
+        self._playBtn = ttk.Button(self, text="▶ 播放", command=self._togglePlay)
+        self._playBtn.pack(side=tk.LEFT, padx=2)
+
+    def _togglePlay(self):
+        if self.onPlay:
+            self.onPlay()
+
+    def setPlaying(self, playing):
+        """播放状态切换：按钮文字 ▶ 播放 / ⏹ 停止。"""
+        self._playBtn.config(text="⏹ 停止" if playing else "▶ 播放")
 
     def _createMenu(self):
         """「创建物体」下拉：选项来自 CREATE_ITEMS（选择列表）。"""
@@ -81,16 +93,8 @@ class Toolbar(ttk.Frame):
         if mode in self._gizmoButtons:
             self._gizmoModeVar.set(mode)
 
-    def _textButton(self, text, kind, hint=None):
-        """纯文字按钮（播放占位）。"""
-        btn = ttk.Button(self, text=text)
-        btn.config(command=lambda: self._trigger(kind, text, hint))
-        btn.pack(side=tk.LEFT, padx=2)
-
-    def _trigger(self, kind, text, hint=None):
-        if kind is None:
-            messagebox.showinfo("Vortex 编辑器", f"「{text}」{hint or '待实现'}。")
-        elif self.onCreate:
+    def _trigger(self, kind, text):
+        if self.onCreate:
             self.onCreate(kind)
         else:
             messagebox.showinfo("Vortex 编辑器", f"「{text}」创建功能未接线。")

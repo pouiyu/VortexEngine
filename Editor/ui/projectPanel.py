@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """项目面板 —— 资源浏览器：浏览 / 创建 / 导入 / 双击打开 / 拖拽 / 复制项目内所有资源。
 
-资源类型（V4）：
+资源类型（V5）：
 - .obj 模型（导入 / 双击 = 使用：换网格或建物体）
 - .vmat 材质（创建 / 单击或双击 = 在检查器编辑颜色）
 - .vscene 场景（创建 / 双击 = 打开场景；新建场景默认含主相机 + 方向光）
+- .vpy 脚本（创建 / 挂到物体脚本组件，播放模式执行）
 
 交互：
-- 右键：新建文件夹 / 创建场景 / 创建材质 / 导入模型 / 刷新 / 重命名 / 删除
+- 右键：新建文件夹 / 创建场景 / 创建材质 / 创建脚本 / 导入模型 / 刷新 / 重命名 / 删除
 - 创建与导入都落在「当前选中目录」（不自动建子文件夹，完全自由）
 - 拖拽资源/文件夹到另一目录 = 移动
 - Ctrl+C / Ctrl+V：复制资源（文件或整目录）到当前目录
@@ -28,6 +29,21 @@ from ..core.materialCache import createMaterialFile
 from ..core.meshCache import importModel
 from ..core.scene import Camera, GameObject, Light, Scene
 from ..core.serializer import saveSceneFile
+
+# .vpy 脚本模板（播放模式：start 进入时一次，update 每帧）
+SCRIPT_TEMPLATE = """# -*- coding: utf-8 -*-
+# Vortex 物体脚本
+# start(obj)：进入播放时调用一次；update(obj, dt)：播放期间每帧调用
+# dt 为秒；脚本异常不会让编辑器崩溃（打印到终端）。
+
+def start(obj):
+    pass
+
+def update(obj, dt):
+    # 示例：每秒绕 Y 轴旋转 30 度
+    # obj.transform.rotation[1] += 30 * dt
+    pass
+"""
 
 
 class ProjectPanel(tk.Frame):
@@ -157,6 +173,7 @@ class ProjectPanel(tk.Frame):
         menu.add_command(label="新建文件夹…", command=self._newFolder)
         menu.add_command(label="创建场景…", command=self._createScene)
         menu.add_command(label="创建材质…", command=self._createMaterial)
+        menu.add_command(label="创建脚本…", command=self._createScript)
         menu.add_command(label="导入模型…", command=self._importModel)
         menu.add_command(label="刷新", command=self.refresh)
         path = self._selectedPath()
@@ -233,6 +250,29 @@ class ProjectPanel(tk.Frame):
                        f"创建材质 {name}")
         self.refresh()
         self._status(f"已创建材质 {rel}")
+
+    def _createScript(self):
+        """在「当前目录」创建 .vpy 脚本文件（播放模式执行）。"""
+        if self.projectRoot is None:
+            messagebox.showinfo("项目", "当前没有打开项目，无法创建脚本。")
+            return
+        name = simpledialog.askstring("创建脚本", "脚本名称：", initialvalue="新脚本")
+        if not name:
+            return
+        targetDir = self._currentDir()
+        path = targetDir / f"{name}.vpy"
+        n = 1
+        while path.exists():
+            path = targetDir / f"{name}{n}.vpy"
+            n += 1
+        try:
+            path.write_text(SCRIPT_TEMPLATE, encoding="utf-8")
+        except OSError as e:
+            messagebox.showerror("创建脚本", str(e))
+            return
+        self._pushUndo(lambda: self._unlinkQuiet(path), f"创建脚本 {path.name}")
+        self.refresh()
+        self._status(f"已创建脚本 {path.name}（挂到物体的脚本组件即可）")
 
     def _importModel(self):
         """导入 .obj 模型到「当前目录」（外部文件用系统选择器是唯一途径）。"""

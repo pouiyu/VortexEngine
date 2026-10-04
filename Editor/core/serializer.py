@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""场景序列化（V3）：scene.json 保存 / 加载。
+"""场景序列化（V5）：scene.json / .vscene 保存加载。
 
 格式：扁平 objects 数组 + parent 用 uuid 引用（旧版约定），
 每个物体带 components 数组（含默认 Transform）。损坏或缺字段时安全回退。
+V5 新增 Script 组件（.vpy 脚本引用）。
 """
 
 import json
@@ -10,9 +11,9 @@ import uuid
 
 import numpy as np
 
-from .scene import Camera, GameObject, Light, MeshRenderer, Scene, Transform
+from .scene import Camera, GameObject, Light, MeshRenderer, Scene, Script, Transform
 
-SCHEMA = 4
+SCHEMA = 5
 
 
 def _listOrNone(v):
@@ -53,6 +54,8 @@ def serializeComponent(comp):
             "near": float(comp.near),
             "far": float(comp.far),
         }
+    if isinstance(comp, Script):
+        return {"type": "Script", "script": comp.script}
     return {"type": "Unknown"}
 
 
@@ -80,6 +83,8 @@ def deserializeComponent(data):
         return Camera(fov=data.get("fov", 60.0),
                       near=data.get("near", 0.1),
                       far=data.get("far", 1000.0))
+    if ctype == "Script":
+        return Script(script=data.get("script"))
     return None
 
 

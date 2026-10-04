@@ -113,6 +113,7 @@ class GLViewport(tk.Frame):
 
     def __init__(self, master, scene=None, onSelect=None, prefs=None, projectRoot=None,
                  onTransform=None, onGizmoModeChanged=None, **kw):
+        self.onScriptUpdate = kw.pop("onScriptUpdate", None)   # 播放模式每帧脚本回调(dt)
         kw.setdefault("background", "#1e1e22")
         super().__init__(master, **kw)
         self.scene = scene
@@ -693,6 +694,8 @@ class GLViewport(tk.Frame):
         self._lastTick = now
         try:
             self._applyFlyMove(dt)   # 浏览模式按键移动（dt 平滑，避免帧率抖动）
+            if self.onScriptUpdate is not None:
+                self.onScriptUpdate(dt)   # 播放模式：脚本每帧 update（异常已内部捕获）
             self.renderFrame()
         except Exception:
             pass                    # 单帧异常不中断渲染循环

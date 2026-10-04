@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""检查器面板：编辑选中物体 / 材质的属性（V4）。
+"""检查器面板：编辑选中物体 / 材质的属性（V5）。
 
 物体模式：
 - 名称 / 激活 / 父级下拉 / 组件增删（onStructure）
 - 变换三组数值框（KeyRelease 实时提交；Gizmo 拖动时 refreshTransformValues 轻量刷新）
-- 组件区：变换 / 网格渲染器（材质选择用项目资源选择器）/ 光照 / 摄像机
+- 组件区：变换 / 网格渲染器（材质选择用项目资源选择器）/ 光照 / 摄像机 / 脚本
 材质模式（资源浏览器选中 .vmat）：编辑颜色并保存到材质文件（onSaveMaterial）
 """
 
@@ -13,7 +13,7 @@ from tkinter import ttk
 
 from ..core.materialCache import listProjectMaterials, loadMaterial, saveMaterial
 from ..core.meshCache import listProjectMeshes
-from ..core.scene import Camera, Light, MeshRenderer, Transform
+from ..core.scene import Camera, Light, MeshRenderer, Script, Transform
 from .resourcePicker import ResourcePicker
 
 
@@ -172,7 +172,7 @@ class InspectorPanel(ttk.Frame):
 
     # ---- 组件区：一个组件一个框 ----
     def _buildComponents(self, obj):
-        """按组件逐个画独立 LabelFrame 框（变换 / 网格渲染器 / 光照 / 摄像机），底部是添加按钮。"""
+        """按组件逐个画独立 LabelFrame 框（变换 / 网格渲染器 / 光照 / 摄像机 / 脚本），底部是添加按钮。"""
         for comp in obj.components:
             if isinstance(comp, Transform):
                 self._buildTransformBox(obj)
@@ -182,6 +182,8 @@ class InspectorPanel(ttk.Frame):
                 self._buildLightBox(obj, comp)
             elif isinstance(comp, Camera):
                 self._buildCameraBox(obj, comp)
+            elif isinstance(comp, Script):
+                self._buildScriptBox(obj, comp)
         addRow = ttk.Frame(self.proxy)
         addRow.pack(fill=tk.X, padx=6, pady=4)
         ttk.Button(addRow, text="+ 添加组件",
@@ -455,7 +457,7 @@ class InspectorPanel(ttk.Frame):
         return "break"
 
     def _menuAddComponent(self, anchor, obj):
-        """「+ 添加组件」下拉：网格渲染器 / 光照 / 摄像机（已有则禁用）。
+        """「+ 添加组件」下拉：网格渲染器 / 光照 / 摄像机 / 脚本（已有则禁用）。
 
         光照不区分方向光/点光源变体：添加后在检查器里切换类型。"""
         menu = tk.Menu(self, tearoff=0)
@@ -479,7 +481,44 @@ class InspectorPanel(ttk.Frame):
                 command=lambda: self._addComponent(obj, Camera()))
         else:
             menu.add_command(label="摄像机（已有）", state=tk.DISABLED)
+        if obj.getComponent(Script) is None:
+            menu.add_command(
+                label="脚本",
+                command=lambda: self._addComponent(obj, Script()))
+        else:
+            menu.add_command(label="脚本（已有）", state=tk.DISABLED)
         menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height())
+
+    def _buildScriptBox(self, obj, sc):
+        """脚本组件框：移除 + 脚本文件显示 + 选择（项目资源选择器 .vpy）。"""
+        sec = ttk.LabelFrame(self.proxy, text="脚本", padding=6)
+        sec.pack(fill=tk.X, padx=6, pady=4)
+        head = ttk.Frame(sec)
+        head.pack(fill=tk.X)
+        ttk.Button(head, text="移除", width=4,
+                   command=lambda: self._removeComponent(obj, sc)).pack(side=tk.RIGHT)
+
+        row = ttk.Frame(sec)
+        row.pack(fill=tk.X, padx=(12, 0), pady=1)
+        ttk.Label(row, text="脚本").pack(side=tk.LEFT)
+        ttk.Label(row, text=sc.script or "（未选择脚本）", width=20,
+                  foreground="#333").pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(row, text="选择…",
+                   command=lambda: self._pickScript(obj, sc)).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(sec, text="播放模式执行 start(obj) / update(obj, dt)",
+                  foreground="#888").pack(anchor=tk.W, padx=(12, 0), pady=(2, 0))
+
+    def _pickScript(self, obj, sc):
+        """打开项目资源选择器选 .vpy 脚本。"""
+        picker = ResourcePicker(self.winfo_toplevel(), self.projectRoot,
+                                title="选择脚本",
+                                extensions={".vpy"},
+                                prompt="选择脚本（双击或点确定）：")
+        picker.wait_window()
+        if picker.result:
+            sc.script = picker.result
+            if self.onValue:
+                self.onValue()
 
     def _addComponent(self, obj, comp):
         """挂载组件后重建检查器 + 通知结构变化。"""

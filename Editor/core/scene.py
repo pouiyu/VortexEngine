@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""场景数据层（V4：Unity 式 GameObject + 组件体系）。
+"""场景数据层（V5：Unity 式 GameObject + 组件体系）。
 
 - Component：组件基类（挂到物体上，默认每个物体挂一个 Transform）
 - Transform：位置 / 旋转（度，绕 X/Y/Z）/ 缩放（物体的第一个组件，不可移除）
@@ -7,6 +7,7 @@
 - Material：颜色等外观由材质资源（.vmat）配置，MeshRenderer 只引用
 - Light：光照组件（方向光 / 点光源，类型在检查器里切换）
 - Camera：摄像机组件（fov / near / far，视口内以视锥 Gizmo 显示朝向）
+- Script：脚本组件（引用项目 .vpy 脚本，播放模式时 start/update 每帧执行）
 - GameObject：名称 + uuid + 激活 + 组件列表 + 父子层级
 - Scene：全部物体（扁平列表，父子靠 parent 引用）+ 增删/设父/取世界变换
 
@@ -85,6 +86,22 @@ class Camera(Component):
         self.fov = float(fov)       # 垂直视场角（度）
         self.near = float(near)     # 近裁剪面
         self.far = float(far)       # 远裁剪面
+
+
+class Script(Component):
+    """脚本组件：播放模式时执行项目里的 .vpy 脚本。
+
+    script 取值：
+    - 相对项目 Resources 的 .vpy 路径（如 "Scripts/rotate.vpy"）
+    - None：未选择脚本（播放时不执行）
+    脚本协议见 Editor/core/runtime.py。
+    """
+
+    TYPE = "Script"
+
+    def __init__(self, script=None):
+        super().__init__()
+        self.script = script
 
 
 # ---- 物体 ----
