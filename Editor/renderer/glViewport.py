@@ -824,6 +824,7 @@ class GLViewport(tk.Frame):
             self._moved = True
             self._pressX, self._pressY = event.x, event.y
             self.camera.pan(dx, dy)
+            self.renderFrame()   # 空闲暂停下也必须即时刷新画面
             return
         if self._gizmoDrag is not None:
             # Gizmo 拖拽：按轴变换选中物体
@@ -835,6 +836,7 @@ class GLViewport(tk.Frame):
         self._moved = True
         self._pressX, self._pressY = event.x, event.y
         self.camera.orbit(dx, dy)
+        self.renderFrame()   # 空闲暂停下也必须即时刷新画面
 
     def _onReleaseLeft(self, event):
         if not self._moved and self._pressX is not None:
@@ -1029,6 +1031,7 @@ class GLViewport(tk.Frame):
 
     def _onWheel(self, event):
         self.camera.zoom(event.delta)
+        self.renderFrame()   # 空闲暂停下也必须即时刷新画面
 
     # ---- 辅助 ----
     def _cursorPos(self):
