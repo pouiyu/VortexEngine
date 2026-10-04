@@ -4,23 +4,29 @@
 资源类型（V4）：
 - .obj 模型（导入 / 双击 = 使用：换网格或建物体）
 - .vmat 材质（创建 / 单击或双击 = 在检查器编辑颜色）
-- .vscene 场景（创建 / 双击 = 打开场景）
+- .vscene 场景（创建 / 双击 = 打开场景；新建场景默认含主相机 + 方向光）
 
 交互：
 - 右键：新建文件夹 / 创建场景 / 创建材质 / 导入模型 / 刷新 / 重命名 / 删除
 - 创建与导入都落在「当前选中目录」（不自动建子文件夹，完全自由）
 - 拖拽资源/文件夹到另一目录 = 移动
 - Ctrl+C / Ctrl+V：复制资源（文件或整目录）到当前目录
+- Ctrl+X / Ctrl+V：剪切资源 = 移动到当前目录
+- Delete：删除选中资源（Ctrl+Z 可撤销）
+- Ctrl+Z：撤销资源操作（创建/删除/重命名/移动/复制粘贴）
 """
 
 import shutil
+import tempfile
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+import numpy as np
+
 from ..core.materialCache import createMaterialFile
 from ..core.meshCache import importModel
-from ..core.scene import Scene
+from ..core.scene import Camera, GameObject, Light, Scene
 from ..core.serializer import saveSceneFile
 
 
@@ -37,7 +43,9 @@ class ProjectPanel(tk.Frame):
         self.onEditMaterial = onEditMaterial  # 选中/双击 .vmat：检查器编辑材质
         self.onImport = onImport            # 导入模型完成回调（刷新检查器网格下拉）
         self.onStatus = onStatus            # 状态栏消息回调
-        self._clipboard = None              # Ctrl+C 复制源（Path）
+        self._clipboard = None              # Ctrl+C/X 剪切源（Path）
+        self._cutMode = False               # True=剪切（粘贴=移动）
+        self._undoStack = []                # 资源操作撤销栈 [(undo_fn, 描述)]
         self._dragSource = None
         self._pressPos = None
         ttk.Label(self, text="项目资源", padding=(6, 3)).pack(fill=tk.X)
@@ -50,6 +58,9 @@ class ProjectPanel(tk.Frame):
         self.tree.bind("<ButtonRelease-1>", self._onRelease)
         self.tree.bind("<Control-c>", self._onCopy)
         self.tree.bind("<Control-v>", self._onPaste)
+        self.tree.bind("<Control-x>", self._onCut)
+        self.tree.bind("<Control-z>", self._undo)
+        self.tree.bind("<Delete>", self._deletePath)   # 焦点在资源树时 Delete 删资源
         self.refresh()
 
     # ---- 目录扫描 ----
@@ -74,16 +85,13 @@ class ProjectPanel(tk.Frame):
                 self.tree.insert(parent, tk.END, text=child.name, values=(child,))
 
     # ---- 路径工具 ----
-    def _selectedPath(self):
-        """当前选中项（文件或目录）的完整路径；无选中返回 None。"""
-        sel = self.tree.selection()
-        if not sel:
-            return None
-        item = sel[0]
+    def _pathFromItem(self, item):
+        """tree item → 完整路径（文件或目录）。root 节点（项目名）是虚拟节点，
+        不代表真实目录；树结构为 root → Resources 内容（Resources 无独立节点），
+        目录路径 = 项目根/Resources/…（拼链时跳过 root 的项目名）。"""
         values = self.tree.item(item, "values")
         if values:
             return Path(values[0])
-        # 目录：按名字链拼出完整路径
         chain = [self.tree.item(item, "text")]
         while True:
             parent = self.tree.parent(item)
@@ -92,10 +100,20 @@ class ProjectPanel(tk.Frame):
             chain.append(self.tree.item(parent, "text"))
             item = parent
         chain.reverse()
-        path = self.projectRoot
+        # 去掉 root 的项目名节点
+        if chain and chain[0] == self.projectRoot.name:
+            chain.pop(0)
+        path = self.projectRoot / "Resources"
         for part in chain:
             path = path / part
         return path
+
+    def _selectedPath(self):
+        """当前选中项（文件或目录）的完整路径；无选中返回 None。"""
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        return self._pathFromItem(sel[0])
 
     def _resourcesDir(self):
         return self.projectRoot / "Resources"
@@ -162,11 +180,12 @@ class ProjectPanel(tk.Frame):
         except OSError as e:
             messagebox.showerror("新建文件夹", str(e))
             return
+        self._pushUndo(lambda: self._undoRemovePath(target), f"新建文件夹 {name}")
         self.refresh()
         self._status(f"已创建文件夹 {name}")
 
     def _createScene(self):
-        """在「当前目录」创建空 .vscene 场景文件。"""
+        """在「当前目录」创建 .vscene 场景文件（默认含主相机 + 方向光）。"""
         if self.projectRoot is None:
             messagebox.showinfo("项目", "当前没有打开项目，无法创建场景。")
             return
@@ -179,9 +198,25 @@ class ProjectPanel(tk.Frame):
         while path.exists():
             path = targetDir / f"{name}{n}.vscene"
             n += 1
-        saveSceneFile(Scene(), path)
+        saveSceneFile(self._defaultScene(), path)
+        self._pushUndo(lambda: self._unlinkQuiet(path), f"创建场景 {path.name}")
         self.refresh()
         self._status(f"已创建场景 {path.stem}.vscene")
+
+    @staticmethod
+    def _defaultScene():
+        """新建场景的默认内容：主相机 + 方向光（不再是空场景「空气」）。"""
+        s = Scene()
+        cam = GameObject(name="主相机")
+        cam.addComponent(Camera())
+        cam.transform.position = np.array([0.0, 2.0, 6.0])
+        sun = GameObject(name="方向光")
+        sun.addComponent(Light(lightType="directional",
+                               color=(1.0, 1.0, 0.95), intensity=1.0))
+        sun.transform.rotation = np.array([45.0, -30.0, 0.0])
+        s.addObject(cam)
+        s.addObject(sun)
+        return s
 
     def _createMaterial(self):
         """在「当前目录」创建 .vmat 材质文件。"""
@@ -191,8 +226,11 @@ class ProjectPanel(tk.Frame):
         name = simpledialog.askstring("创建材质", "材质名称：", initialvalue="新材质")
         if not name:
             return
+        targetDir = self._currentDir()
         rel = createMaterialFile(self.projectRoot, name=name,
-                                 subdir=self._subdirOf(self._currentDir()))
+                                 subdir=self._subdirOf(targetDir))
+        self._pushUndo(lambda: self._unlinkQuiet(targetDir / f"{name}.vmat"),
+                       f"创建材质 {name}")
         self.refresh()
         self._status(f"已创建材质 {rel}")
 
@@ -205,12 +243,15 @@ class ProjectPanel(tk.Frame):
             title="导入 .obj 模型", filetypes=[("OBJ 模型", "*.obj"), ("所有文件", "*.*")])
         if not file:
             return
+        targetDir = self._currentDir()
         try:
             rel = importModel(Path(file), self.projectRoot,
-                              subdir=self._subdirOf(self._currentDir()))
+                              subdir=self._subdirOf(targetDir))
         except (OSError, ValueError) as e:
             messagebox.showerror("导入失败", str(e))
             return
+        self._pushUndo(lambda: self._unlinkQuiet(targetDir / Path(rel).name),
+                       f"导入模型 {Path(rel).name}")
         self.refresh()
         self._status(f"已导入模型 {rel}")
         if self.onImport:
@@ -242,26 +283,33 @@ class ProjectPanel(tk.Frame):
         except OSError as e:
             messagebox.showerror("重命名", str(e))
             return
+        oldPath = path
+        self._pushUndo(lambda: self._restorePath(target, oldPath),
+                       f"重命名 {oldPath.name} → {newName}")
         self.refresh()
         self._status(f"已重命名 {path.name} → {newName}")
 
-    def _deletePath(self):
+    def _deletePath(self, _event=None):
+        """删除选中资源（移到临时区，Ctrl+Z 可撤销恢复）。"""
         path = self._selectedPath()
         if path is None or not path.exists():
-            return
+            return "break" if _event is not None else None
         kind = "文件夹" if path.is_dir() else "文件"
-        if not messagebox.askyesno("删除", f"确定删除{kind}「{path.name}」？\n此操作不可撤销。"):
-            return
+        if not messagebox.askyesno("删除", f"确定删除{kind}「{path.name}」？\n可 Ctrl+Z 撤销。"):
+            return "break" if _event is not None else None
         try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
+            trashDir = Path(tempfile.mkdtemp(prefix="vortex_undo_"))
+            target = trashDir / path.name
+            path.rename(target)
         except OSError as e:
             messagebox.showerror("删除", str(e))
-            return
+            return "break" if _event is not None else None
+        origPath = path
+        self._pushUndo(lambda: self._restorePath(target, origPath),
+                       f"删除 {path.name}")
         self.refresh()
-        self._status(f"已删除 {path.name}")
+        self._status(f"已删除 {path.name}（Ctrl+Z 可撤销）")
+        return "break" if _event is not None else None
 
     # ---- 拖拽移动 ----
     def _onPress(self, event):
@@ -297,7 +345,7 @@ class ProjectPanel(tk.Frame):
 
     def _movePath(self, src, dstDir):
         if dstDir.resolve() == src.parent.resolve():
-            return
+            return None
         target = dstDir / src.name
         n = 1
         while target.exists():
@@ -308,35 +356,34 @@ class ProjectPanel(tk.Frame):
             src.rename(target)
         except OSError as e:
             messagebox.showerror("移动失败", str(e))
-            return
+            return None
+        self._pushUndo(lambda: self._restorePath(target, src), f"移动 {src.name}")
         self.refresh()
         self._status(f"已移动 {src.name}")
+        return target
 
     def _treePath(self, item):
         """tree item → 完整路径（文件或目录）。"""
-        values = self.tree.item(item, "values")
-        if values:
-            return Path(values[0])
-        chain = [self.tree.item(item, "text")]
-        while True:
-            parent = self.tree.parent(item)
-            if not parent:
-                break
-            chain.append(self.tree.item(parent, "text"))
-            item = parent
-        chain.reverse()
-        path = self.projectRoot
-        for part in chain:
-            path = path / part
-        return path
+        return self._pathFromItem(item)
 
-    # ---- 复制 / 粘贴 ----
+    # ---- 复制 / 剪切 / 粘贴 ----
     def _onCopy(self, _event):
         path = self._selectedPath()
         if path is None or not path.exists():
-            return
+            return "break"
         self._clipboard = path
+        self._cutMode = False
         self._status(f"已复制 {path.name}")
+        return "break"
+
+    def _onCut(self, _event):
+        """Ctrl+X：剪切选中资源（粘贴=移动）。"""
+        path = self._selectedPath()
+        if path is None or not path.exists():
+            return "break"
+        self._clipboard = path
+        self._cutMode = True
+        self._status(f"已剪切 {path.name}（Ctrl+V 粘贴 = 移动）")
         return "break"
 
     def _onPaste(self, _event):
@@ -345,6 +392,14 @@ class ProjectPanel(tk.Frame):
             return "break"
         dstDir = self._currentDir()
         src = self._clipboard
+        if self._cutMode:
+            # 剪切粘贴 = 移动（_movePath 已记录撤销）
+            moved = self._movePath(src, dstDir)
+            self._cutMode = False
+            self._clipboard = None
+            if moved is not None:
+                self._status(f"已移动 {moved.name}")
+            return "break"
         if src.is_dir():
             newPath = dstDir / f"{src.name} 副本"
             n = 1
@@ -368,9 +423,59 @@ class ProjectPanel(tk.Frame):
             except OSError as e:
                 messagebox.showerror("粘贴失败", str(e))
                 return "break"
+        self._pushUndo(lambda: self._undoRemovePath(newPath), f"复制粘贴 {newPath.name}")
         self.refresh()
         self._status(f"已粘贴 {newPath.name}")
         return "break"
+
+    # ---- 撤销（资源操作逆操作栈） ----
+    def _pushUndo(self, undo, desc):
+        self._undoStack.append((undo, desc))
+        if len(self._undoStack) > 30:
+            self._undoStack.pop(0)
+
+    def _undo(self, _event=None):
+        if not self._undoStack:
+            self._status("没有可撤销的资源操作")
+            return "break"
+        undo, desc = self._undoStack.pop()
+        try:
+            undo()
+        except OSError as e:
+            messagebox.showerror("撤销失败", str(e))
+        self.refresh()
+        self._status(f"已撤销：{desc}")
+        return "break"
+
+    def _restorePath(self, src, origPath):
+        """把临时区的资源移回原路径（原路径被占用则自动加「恢复N」）。"""
+        if origPath.exists():
+            parent = origPath.parent
+            n = 1
+            while True:
+                cand = parent / f"{origPath.stem} 恢复{n}{origPath.suffix}"
+                if not cand.exists():
+                    origPath = cand
+                    break
+                n += 1
+        src.rename(origPath)
+
+    def _undoRemovePath(self, path):
+        """撤销粘贴/创建：把刚新建的资源移到临时区（即删除）。"""
+        try:
+            trashDir = Path(tempfile.mkdtemp(prefix="vortex_undo_"))
+            path.rename(trashDir / path.name)
+        except OSError:
+            self._unlinkQuiet(path)
+
+    def _unlinkQuiet(self, path):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        except OSError:
+            pass
 
     # ---- 双击打开 ----
     def _onDoubleClick(self, event):

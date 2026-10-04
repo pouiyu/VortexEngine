@@ -6,7 +6,9 @@
 - 不能拖到自身、自身子孙、或「场景」根节点（允许拖回根）
 - 拖到根节点「场景」= 设为根物体
 
-Ctrl+C / Ctrl+V：复制选中物体（含整棵子树）→ 粘贴为新物体。
+选中：单击单选；按住 Ctrl/Shift 点击多选（Treeview extended 模式）。
+Ctrl+C / Ctrl+V：复制选中物体（含整棵子树）→ 粘贴为新物体（多选一起复制）。
+Ctrl+X / Ctrl+V：剪切选中物体 = 移动（粘贴到当前选中物体下，无选中则设根）。
 """
 
 import tkinter as tk
@@ -63,41 +65,81 @@ class HierarchyPanel(tk.Frame):
         self.onSelect = onSelect
         self.onStructure = onStructure   # 结构变化回调（main 刷新其它面板/视图）
         self.selected = None
-        self._clipboard = None           # Ctrl+C 复制源（物体）
+        self._clipboard = None           # Ctrl+C/X 剪切源（物体列表）
+        self._cutMode = False            # True=剪切（粘贴=移动）
 
         header = ttk.Label(self, text="层级", padding=(6, 3))
         header.pack(fill=tk.X)
-        self.tree = ttk.Treeview(self, show="tree", selectmode="browse")
+        self.tree = ttk.Treeview(self, show="tree", selectmode="extended")
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._onSelect)
         self.tree.bind("<ButtonPress-1>", self._onPress)
         self.tree.bind("<ButtonRelease-1>", self._onRelease)
         self.tree.bind("<Control-c>", self._onCopy)
         self.tree.bind("<Control-v>", self._onPaste)
+        self.tree.bind("<Control-x>", self._onCut)
         self.tree.tag_configure("inactive", foreground="#888")
         self._idToObj = {}   # tree iid → 物体映射
         self._dragSource = None
         self._pressPos = None
         self.refresh()
 
-    # ---- 复制 / 粘贴 ----
+    # ---- 选中辅助 ----
+    def _selectedObjects(self):
+        """当前 Treeview 选中项对应的物体列表（保持 iid 顺序）。"""
+        return [self._idToObj[i] for i in self.tree.selection() if i in self._idToObj]
+
+    def _selectObjects(self, objs):
+        """选中指定物体集合（无事件回调，只设高亮）。"""
+        ids = [oid for oid, o in self._idToObj.items() if o in objs]
+        if ids:
+            self.tree.selection_set(ids)
+
+    # ---- 复制 / 剪切 / 粘贴 ----
     def _onCopy(self, _event):
-        if self.selected is not None:
-            self._clipboard = self.selected
-            return "break"
+        objs = self._selectedObjects()
+        if objs:
+            self._clipboard = objs
+            self._cutMode = False
+        return "break"
+
+    def _onCut(self, _event):
+        """Ctrl+X：剪切选中物体（粘贴=移动到目标物体下/根）。"""
+        objs = self._selectedObjects()
+        if objs:
+            self._clipboard = objs
+            self._cutMode = True
         return "break"
 
     def _onPaste(self, _event):
-        if self._clipboard is None or self.scene is None:
+        if not self._clipboard or self.scene is None:
             return "break"
-        clone = cloneObjectTree(self._clipboard)
-        self.scene.addObject(clone)
-        # 粘贴到原物体父级下（根物体则放场景根），位置保持原位
-        if self._clipboard.parent is not None:
-            self.scene.setParent(clone, self._clipboard.parent)
+        if self._cutMode:
+            # 剪切粘贴 = 移动：粘贴到当前选中物体下（无选中 → 设根）
+            targets = self._selectedObjects()
+            dst = targets[-1] if targets else None
+            for src in self._clipboard:
+                if src not in self.scene.objects:
+                    continue
+                if dst is None:
+                    self.scene.setParent(src, None)
+                elif dst is not src and not src.isDescendantOf(dst):
+                    self.scene.setParent(src, dst)
+            self._cutMode = False
+            self._clipboard = None
+        else:
+            clones = []
+            for src in self._clipboard:
+                clone = cloneObjectTree(src)
+                self.scene.addObject(clone)
+                # 粘贴到原物体父级下（根物体则放场景根），位置保持原位
+                if src.parent is not None:
+                    self.scene.setParent(clone, src.parent)
+                clones.append(clone)
+            self._selectObjects(clones)
         self.refresh()
         if self.onSelect:
-            self.onSelect(clone)
+            self.onSelect(self._selectedObjects())
         if self.onStructure:
             self.onStructure()
         return "break"
@@ -161,21 +203,22 @@ class HierarchyPanel(tk.Frame):
 
     # ---- 选中 ----
     def _onSelect(self, _event):
-        sel = self.tree.selection()
-        if not sel:
+        objs = self._selectedObjects()
+        if not objs:
             return
-        obj = self._idToObj.get(sel[0])
-        self.selected = obj
+        self.selected = objs[-1]   # 树序最后一项作为主选中（Gizmo/检查器作用对象）
         if self.onSelect:
-            self.onSelect(obj)
+            self.onSelect(objs)
+
+    def selectObjects(self, objs):
+        """外部（视口拾取 / 结构刷新）设置选中集合，联动高亮层级项。
+        与当前一致则跳过（防止再次触发 TreeviewSelect 事件风暴）。"""
+        objs = list(objs)
+        cur = self._selectedObjects()
+        if len(cur) == len(objs) and all(a is b for a, b in zip(cur, objs)):
+            return
+        self._selectObjects(objs)
 
     def selectObject(self, obj):
-        """外部（如视口拾取）设置选中，联动高亮层级项。
-        已选中则跳过 selection_set（防止再次触发 TreeviewSelect 事件风暴）。"""
-        for oid, o in self._idToObj.items():
-            if o is obj:
-                cur = self.tree.selection()
-                if len(cur) == 1 and self._idToObj.get(cur[0]) is obj:
-                    return
-                self.tree.selection_set(oid)
-                return
+        """外部（如视口拾取）设置单选选中（保持旧接口语义）。"""
+        self.selectObjects([obj] if obj is not None else [])

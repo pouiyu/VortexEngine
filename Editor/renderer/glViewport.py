@@ -119,7 +119,8 @@ class GLViewport(tk.Frame):
         self.onSelect = onSelect          # 拾取选中回调（main 提供）
         self.onTransform = onTransform    # Gizmo 变换回调（live=拖动中 / False=结束）
         self.onGizmoModeChanged = onGizmoModeChanged   # Gizmo 模式切换回调（同步工具栏）
-        self.selected = None              # 当前选中物体（黄色描边）
+        self.selected = None              # 主选中物体（黄色描边 + Gizmo 作用对象）
+        self.selectedSet = set()          # 多选集合（Shift 追加；含主选中）
         self.projectRoot = projectRoot    # 项目根（解析 Resources 下 .obj 用）
         self.camera = OrbitCamera()
         self.keyBinds = dict(DEFAULT_KEYS)
@@ -395,7 +396,7 @@ class GLViewport(tk.Frame):
             glDrawElements(GL_TRIANGLES, len(data.indices), GL_UNSIGNED_INT, data.indices)
             glDisableClientState(GL_NORMAL_ARRAY)
             glDisableClientState(GL_VERTEX_ARRAY)
-            if obj is self.selected:
+            if obj in self.selectedSet:
                 self._drawOutline(data)
             glPopMatrix()
 
@@ -427,7 +428,10 @@ class GLViewport(tk.Frame):
         return worldMatrix(self.selected)[:3, 3]
 
     def _drawGizmo(self):
-        """绘制选中物体的变换 Gizmo（move=三轴箭头 / rotate=圆环 / scale=轴+方块）。"""
+        """绘制选中物体的变换 Gizmo（move=三轴箭头 / rotate=圆环 / scale=轴+方块）。
+
+        多选（集合 > 1）时只描边、不画变换 Gizmo（避免多物体混淆），
+        但相机视锥仍显示（提示朝向）。"""
         if self.selected is None:
             return
         origin = self._gizmoOrigin()
@@ -435,16 +439,17 @@ class GLViewport(tk.Frame):
             return
         glDisable(GL_LIGHTING)
         glDisable(GL_DEPTH_TEST)   # Gizmo 始终可见（不穿模）
-        size = self._gizmoSize(origin)
-        if self.gizmoMode == "rotate":
-            glLineWidth(3.5)   # 旋转圆环加粗（原来 2px 太细难抓）
-            self._drawRotateGizmo(origin, size)
-        elif self.gizmoMode == "scale":
-            glLineWidth(2.0)
-            self._drawScaleGizmo(origin, size)
-        else:
-            glLineWidth(2.0)
-            self._drawMoveGizmo(origin, size)
+        if len(self.selectedSet) <= 1:
+            size = self._gizmoSize(origin)
+            if self.gizmoMode == "rotate":
+                glLineWidth(3.5)   # 旋转圆环加粗（原来 2px 太细难抓）
+                self._drawRotateGizmo(origin, size)
+            elif self.gizmoMode == "scale":
+                glLineWidth(2.0)
+                self._drawScaleGizmo(origin, size)
+            else:
+                glLineWidth(2.0)
+                self._drawMoveGizmo(origin, size)
         self._drawCameraFrustum()   # 选中带 Camera 组件的物体 → 画视锥朝向
         glLineWidth(1.0)
         glEnable(GL_DEPTH_TEST)
@@ -827,11 +832,14 @@ class GLViewport(tk.Frame):
 
     def _onReleaseLeft(self, event):
         if not self._moved and self._pressX is not None:
-            # 轻微位移 → 视为点击，拾取物体
+            # 轻微位移 → 视为点击，拾取物体（Shift = 追加/移除多选）
             obj = self.pickObject(event.x, event.y)
-            self.selected = obj
-            if self.onSelect:
-                self.onSelect(obj)
+            if event.state & 0x0001 and obj is not None:
+                if self.onSelect:
+                    self.onSelect(obj, True)
+            else:
+                if self.onSelect:
+                    self.onSelect(obj, False)
         wasGizmo = self._gizmoDrag is not None
         self._pressX = self._pressY = None
         self._moved = False
@@ -1043,9 +1051,16 @@ class GLViewport(tk.Frame):
         self._user32.SetCursorPos(cx, cy)
 
     def setSelected(self, obj):
-        """外部（层级/检查器）设置选中，更新描边。"""
+        """外部（层级/检查器）设置选中（单选），更新描边。"""
         self.selected = obj
+        self.selectedSet = {obj} if obj is not None else set()
         self.renderFrame()
+
+    def setSelectedSet(self, objs):
+        """外部（main）同步多选集合，更新描边（不含 renderFrame）。"""
+        self.selectedSet = set(objs)
+        if self.selected is not None and self.selected not in self.selectedSet:
+            self.selected = next(iter(self.selectedSet), None)
 
     # ---- 释放 ----
     def dispose(self):

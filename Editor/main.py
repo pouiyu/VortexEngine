@@ -100,7 +100,10 @@ class EditorApp:
             self.scene = createDemoScene()
             self.scenePath = None
         self.prefs = loadPreferences()
-        self.selected = None            # 当前选中物体（结构刷新后恢复高亮用）
+        self.selected = None            # 主选中物体（Gizmo/检查器作用对象）
+        self.selectedSet = set()        # 多选集合（Shift 追加；含主选中）
+        self._undoStack = []            # 场景撤销栈（序列化快照）
+        self._lastUndoTime = 0.0        # 变换类撤销合并用
         self._unsaved = False           # 未保存修改标记（标题显示 *）
         self._updatingTitle = False
         self._updateTitle()
@@ -111,10 +114,12 @@ class EditorApp:
         self._buildMenu()
         self._buildLayout()
 
-        # 快捷键：Delete 删除选中（焦点在输入框时交给输入框）；Ctrl+S/O 保存/打开
+        # 快捷键：Delete 删除选中（焦点在输入框时交给输入框）；Ctrl+S/O 保存/打开；
+        # Ctrl+Z 撤销场景（焦点在资源树时由项目面板的 <Control-z> 优先处理资源撤销）
         root.bind("<Delete>", lambda e: self.deleteSelected())
         root.bind("<Control-s>", lambda e: self.saveScene())
         root.bind("<Control-o>", lambda e: self.openScene())
+        root.bind("<Control-z>", self._undoScene)
         # 退出前检查未保存修改
         root.protocol("WM_DELETE_WINDOW", self._onClose)
 
@@ -216,7 +221,7 @@ class EditorApp:
         left = ttk.Panedwindow(body, orient=tk.VERTICAL)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(4, 0), pady=2)
 
-        self.hierarchy = HierarchyPanel(left, scene=self.scene, onSelect=self._onSelect,
+        self.hierarchy = HierarchyPanel(left, scene=self.scene, onSelect=self._onHierarchySelect,
                                          onStructure=self._onStructure)
         left.add(self.hierarchy, weight=2)
 
@@ -242,7 +247,7 @@ class EditorApp:
         self.inspector.pack(side=tk.LEFT, fill=tk.Y)
 
     def _onTransform(self, obj, live=False):
-        """Gizmo 变换联动：live=True 拖动中轻量刷新数值框；否则重建检查器。"""
+        """Gizmo 变换联动：live=True 拖动中轻量刷新数值框；否则重建检查器 + 压撤销。"""
         if obj is None or self.inspector is None:
             return
         if live:
@@ -250,6 +255,48 @@ class EditorApp:
         else:
             self.inspector.showObject(obj)
             self.markUnsaved()
+            self._pushUndo()
+
+    # ---- 场景撤销（Ctrl+Z，序列化快照栈） ----
+    def _pushUndo(self, merge=False):
+        """把当前场景快照压入撤销栈。merge=True（数值连续提交）时替换栈顶中间态。"""
+        if self.scene is None:
+            return
+        from .core.serializer import serializeScene
+        snap = serializeScene(self.scene)
+        now = time.monotonic()
+        if merge and self._undoStack and now - self._lastUndoTime < 0.5:
+            self._undoStack[-1] = snap      # 连续数值提交只保留最近一次
+        else:
+            self._undoStack.append(snap)
+            if len(self._undoStack) > 50:
+                self._undoStack.pop(0)
+        self._lastUndoTime = now
+
+    def _undoScene(self, _event=None):
+        """Ctrl+Z：恢复上一场景快照（焦点在输入框/资源树时让位）。"""
+        focus = self.root.focus_get()
+        if isinstance(focus, (ttk.Entry, tk.Entry, tk.Text)):
+            return "break"
+        if not self._undoStack:
+            self.status.showMessage("没有可撤销的操作")
+            return "break"
+        from .core.serializer import deserializeScene
+        snap = self._undoStack.pop()
+        self.scene = deserializeScene(snap)
+        self.viewport.scene = self.scene
+        self.hierarchy.scene = self.scene
+        self.inspector.scene = self.scene
+        self.selected = None
+        self.selectedSet = set()
+        self.viewport.setSelected(None)
+        self.viewport.setSelectedSet(set())
+        self.inspector.showObject(None)
+        self.hierarchy.refresh()
+        self.viewport.renderFrame()
+        self.markUnsaved()
+        self.status.showMessage("已撤销（Ctrl+Z）")
+        return "break"
 
     def _onGizmoMode(self, mode):
         """工具栏按钮切换 Gizmo 模式。"""
@@ -260,28 +307,54 @@ class EditorApp:
         if hasattr(self, "toolbar"):
             self.toolbar.setGizmoMode(mode)
 
-    def _onSelect(self, obj):
-        """层级 / 视口拾取都能选中物体，三处联动（检查器 + 视口描边 + 层级高亮）。"""
-        self.selected = obj
-        if obj is None:
+    def _onSelect(self, obj, additive=False):
+        """视口拾取选中：obj=None 取消；additive=True（Shift）= 追加/移除多选。"""
+        if additive and obj is not None:
+            if obj in self.selectedSet:
+                self.selectedSet.discard(obj)
+                if obj is self.selected:
+                    self.selected = next(iter(self.selectedSet), None)
+            else:
+                self.selectedSet.add(obj)
+                self.selected = obj
+        else:
+            self.selected = obj
+            self.selectedSet = {obj} if obj is not None else set()
+        self._syncSelection()
+
+    def _onHierarchySelect(self, objs):
+        """层级 Treeview 多选（单击单选；Ctrl/Shift 多选）。objs 为物体列表。"""
+        if not objs:
+            return
+        self.selectedSet = set(objs)
+        self.selected = objs[-1]   # 树序最后一项作为主选中
+        self._syncSelection()
+
+    def _syncSelection(self):
+        """三处联动：视口描边集合 / 检查器（主选中）/ 层级高亮集合。"""
+        if self.selected is None:
             self.viewport.setSelected(None)
+            self.viewport.setSelectedSet(set())
             self.inspector.showObject(None)
             return
-        self.viewport.setSelected(obj)
-        self.inspector.showObject(obj)
-        self.hierarchy.selectObject(obj)
+        self.viewport.setSelected(self.selected)      # 主选中（先重置为单选）
+        self.viewport.setSelectedSet(self.selectedSet)  # 再同步多选集合
+        self.inspector.showObject(self.selected)
+        self.hierarchy.selectObjects(self.selectedSet)
 
     def _onValue(self):
-        """数值变化（变换/颜色）：标记未保存 + 仅重绘视口。"""
+        """数值变化（变换/颜色）：标记未保存 + 压撤销快照 + 仅重绘视口。"""
         self.markUnsaved()
+        self._pushUndo(merge=True)
         self.viewport.renderFrame()
 
     def _onStructure(self):
-        """结构变化（名称/激活/父子/组件增删）：刷新层级 + 重绘，并恢复选中高亮。"""
+        """结构变化（名称/激活/父子/组件增删）：压撤销 + 刷新层级 + 重绘，并恢复选中高亮。"""
         self.markUnsaved()
+        self._pushUndo()
         self.hierarchy.refresh()
-        if self.selected is not None:
-            self.hierarchy.selectObject(self.selected)
+        if self.selectedSet:
+            self.hierarchy.selectObjects(self.selectedSet)
         self.viewport.renderFrame()
 
     def deleteSelected(self):
@@ -289,12 +362,18 @@ class EditorApp:
         focus = self.root.focus_get()
         if isinstance(focus, (ttk.Entry, tk.Entry, tk.Text)):
             return
-        obj = self.viewport.selected
-        if obj is None or self.scene is None:
+        targets = [o for o in self.selectedSet if o in self.scene.objects] \
+            if self.selectedSet else []
+        if not targets:
             return
-        self.scene.removeObject(obj)   # 连带子树一起移除
+        self._pushUndo()
+        for obj in targets:
+            if obj in self.scene.objects:
+                self.scene.removeObject(obj)   # 连带子树一起移除
         self.selected = None
+        self.selectedSet = set()
         self.viewport.setSelected(None)
+        self.viewport.setSelectedSet(set())
         self.hierarchy.refresh()
         self.inspector.showObject(None)
         self.markUnsaved()
@@ -324,10 +403,13 @@ class EditorApp:
         self.hierarchy.scene = scene
         self.inspector.scene = scene
         self.selected = None
+        self.selectedSet = set()
         self.viewport.setSelected(None)
+        self.viewport.setSelectedSet(set())
         self.inspector.showObject(None)
         self.hierarchy.refresh()
         self.viewport.renderFrame()
+        self._undoStack.clear()   # 切换场景后旧撤销栈作废
         self.clearUnsaved()
         return True
 
@@ -404,6 +486,7 @@ class EditorApp:
         self.hierarchy.selectObject(go)
         self.viewport.renderFrame()
         self.markUnsaved()
+        self._pushUndo()
         self.status.showMessage(f"已创建「{go.name}」")
 
     def importModel(self, path):
@@ -428,6 +511,7 @@ class EditorApp:
             mr.mesh = rel
             self.viewport.renderFrame()
             self.markUnsaved()
+            self._pushUndo()
             self.status.showMessage(f"已把「{self.selected.name}」的网格设为 {rel}")
             return
         go = GameObject(name=Path(rel).stem)
@@ -440,6 +524,7 @@ class EditorApp:
         self.hierarchy.selectObject(go)
         self.viewport.renderFrame()
         self.markUnsaved()
+        self._pushUndo()
         self.status.showMessage(f"已创建物体（模型 {rel}）")
 
     # ---- 设置 ----
