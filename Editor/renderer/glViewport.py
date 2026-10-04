@@ -698,22 +698,22 @@ class GLViewport(tk.Frame):
         self._flyActive = True
         self._hideCursor(True)
         self.focus_set()
-        # 以“当前实际光标位置”为转头基准（物理屏幕坐标，兼容高 DPI）
-        self._flyRefX, self._flyRefY = self._cursorPos()
         self._warpToCenter()
-        # 回中后以实际落点为基准，吸收 DPI 缩放/回写延迟的偏差
-        self._flyRefX, self._flyRefY = self._cursorPos()
+        # 基准固定为视口中心：不依赖回中后的光标读回
+        # （SetCursorPos 是异步消息，立即 GetCursorPos 可能拿到回中前的位置）
+        self._flyRefX, self._flyRefY = self._viewportCenter()
 
     def _onMiddleMotion(self, event):
         if not self._flyActive:
             return
         x, y = self._cursorPos()
         dx, dy = x - self._flyRefX, y - self._flyRefY
-        if abs(dx) < 1 and abs(dy) < 1:
-            return                      # 回中回显：光标已回中心，忽略避免抖动
+        if abs(dx) < 2 and abs(dy) < 2:
+            return                      # 光标基本在中心：忽略微残差避免抖动
         self.camera.orbit(dx, dy)       # 中键拖动转头（同环绕手感）
         self._warpToCenter()
-        self._flyRefX, self._flyRefY = self._cursorPos()   # 以新落点为基准
+        # 基准保持视口中心（不动）：光标残差会在下一次 dx/dy 里自动抵消，
+        # 不会累积漂移 → 旋转匀速、方向一致
 
     def _onReleaseMiddle(self, _event):
         self._flyActive = False
