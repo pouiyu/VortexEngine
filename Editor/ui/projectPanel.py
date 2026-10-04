@@ -30,16 +30,22 @@ from ..core.meshCache import importModel
 from ..core.scene import Camera, GameObject, Light, Scene
 from ..core.serializer import saveSceneFile
 
-# .vpy 脚本模板（播放模式：start 进入时一次，update 每帧）
+# .vpy 脚本模板（播放模式：进入时 start()，之后每帧 update()）
 SCRIPT_TEMPLATE = """# -*- coding: utf-8 -*-
 # Vortex 物体脚本
-# start(obj)：进入播放时调用一次；update(obj, dt)：播放期间每帧调用
-# dt 为秒；脚本异常不会让编辑器崩溃（打印到终端）。
+# 进入播放调用 start()；播放期间每帧调用 update()
+# 在脚本里获取当前物体与帧间隔：
+#   obj = getSelf()
+#   dt = getDuration()
+# 更多 API（创建/删除物体、材质、文件、窗口等）见「帮助 → 脚本 API 参考」
 
-def start(obj):
+def start():
+    obj = getSelf()
     pass
 
-def update(obj, dt):
+def update():
+    obj = getSelf()
+    dt = getDuration()
     # 示例：每秒绕 Y 轴旋转 30 度
     # obj.transform.rotation[1] += 30 * dt
     pass

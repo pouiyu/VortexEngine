@@ -185,10 +185,11 @@ class EditorApp:
         _clearCache()                       # 重新加载脚本（热更新编辑内容）
         self._playSnapshot = serializeScene(self.scene)
         self._playing = True
-        startScripts(self.scene, self.projectRoot)
         self.toolbar.setPlaying(True)
         self._playWindow = PlayWindow(self.root, self.scene, projectRoot=self.projectRoot,
                                       onClose=self._stopPlay)
+        startScripts(self.scene, self.projectRoot,
+                     gameWindow=self._playWindow, master=self.root)
         self.status.showMessage("▶ 播放中（F5 或按钮停止，播放修改不会保存）")
         self._updateTitle()
 
@@ -283,9 +284,26 @@ class EditorApp:
         menubar.add_cascade(label="设置", menu=mSettings)
 
         mHelp = tk.Menu(menubar, tearoff=0)
+        mHelp.add_command(label="脚本 API 参考", command=self._showScriptApi)
         mHelp.add_command(label="关于", command=self._showAbout)
         menubar.add_cascade(label="帮助", menu=mHelp)
         self.root.config(menu=menubar)
+
+    def _showScriptApi(self):
+        """帮助：打开只读窗口展示脚本 API 参考。"""
+        from .core.runtime import API_DOCS
+        win = tk.Toplevel(self.root)
+        win.title("脚本 API 参考 — Vortex")
+        win.geometry("640x520")
+        txt = tk.Text(win, wrap="none", font=("Consolas", 10),
+                      background="#1e1e28", foreground="#d8d8e0",
+                      relief=tk.FLAT, padx=10, pady=8)
+        txt.pack(fill=tk.BOTH, expand=True)
+        sb = tk.Scrollbar(win, orient=tk.VERTICAL, command=txt.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.config(yscrollcommand=sb.set)
+        txt.insert("1.0", API_DOCS)
+        txt.config(state=tk.DISABLED)
 
     def resetCamera(self):
         """视角重置（视图菜单）：保留用户设定的速度系数。"""
@@ -306,6 +324,7 @@ class EditorApp:
             "GameObject + 组件（变换 / 网格渲染器 / 光照 / 摄像机 / 脚本）\n"
             "资源系统：.obj 模型 / .vmat 材质 / .vscene 场景 / .vpy 脚本\n"
             "内置代码编辑器：双击 .vpy 打开，语法高亮 + Ctrl+S 保存\n"
+            "脚本 API：getSelf/getDuration + 创建删除物体、材质文件、文件、窗口、分辨率等\n"
             "播放模式：▶ 播放（F5）执行物体脚本，弹出游戏视图窗口，停止恢复播放前场景\n"
             "下一阶段：V6 运行时导出",
         )
@@ -808,6 +827,29 @@ def selftest():
         restored = app.scene.findByUuid(go.uuid)
         assert restored is not None and abs(restored.transform.position[0] - 0.0) < 1e-6, \
             "停止播放未恢复播放前场景"
+        # V5.3：新式 API（def start()/update() 无参 + getSelf/getDuration）
+        (proj / "Resources" / "Scripts" / "新式.vpy").write_text(
+            "def start():\n"
+            "    obj = getSelf()\n"
+            "    obj._apiStart = True\n"
+            "def update():\n"
+            "    obj = getSelf()\n"
+            "    dt = getDuration()\n"
+            "    obj.transform.rotation[1] += 90 * dt\n",
+            encoding="utf-8")
+        from .core.scene import Script as _S
+        go2 = GameObject(name="新式转盘")
+        go2.addComponent(MeshRenderer(mesh="cube", material="default"))
+        go2.addComponent(_S(script="Scripts/新式.vpy"))
+        app.scene.addObject(go2)
+        app._togglePlay()
+        assert app._playing, "播放未进入（新式）"
+        assert getattr(go2, "_apiStart", False), "新式 start() 未执行（getSelf 失败）"
+        r0 = go2.transform.rotation[1]
+        app._onScriptTick(1.0)
+        assert abs((go2.transform.rotation[1] - r0) - 90.0) < 1e-6, "新式 update() 未执行（getDuration 失败）"
+        app._togglePlay()
+        assert not app._playing, "播放未停止（新式）"
         # V5.2：代码编辑器（高亮 + 保存写回）
         from .ui.codeEditor import CodeEditorWindow
         sp = proj / "Resources" / "Scripts" / "高亮.vpy"
