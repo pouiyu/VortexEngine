@@ -42,12 +42,37 @@ class PlayWindow(tk.Toplevel):
         self._errorBar.pack(side=tk.BOTTOM, fill=tk.X)
         self._errorBar.pack_forget()
 
+        # 脚本日志信息栏（logMessage 输出，5 秒后自动隐藏）
+        self._infoBar = tk.Label(self, text="", background="#2a5", foreground="#fff",
+                                 anchor=tk.W, justify=tk.LEFT, wraplength=900)
+        self._infoBar.pack(side=tk.BOTTOM, fill=tk.X)
+        self._infoBar.pack_forget()
+        self._infoHideAfter = None
+
         self.protocol("WM_DELETE_WINDOW", self._close)
 
     def showScriptError(self, message):
         """显示脚本错误（供 runtime 回调）。"""
         self._errorBar.config(text=message)
         self._errorBar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def showLog(self, message):
+        """显示脚本日志（logMessage 回调），5 秒后自动隐藏。"""
+        self._infoBar.config(text=str(message))
+        self._infoBar.pack(side=tk.BOTTOM, fill=tk.X)
+        if self._infoHideAfter is not None:
+            try:
+                self.after_cancel(self._infoHideAfter)
+            except Exception:
+                pass
+        self._infoHideAfter = self.after(5000, self._hideLog)
+
+    def _hideLog(self):
+        self._infoHideAfter = None
+        try:
+            self._infoBar.pack_forget()
+        except Exception:
+            pass
 
     @staticmethod
     def _findSceneCamera(scene):

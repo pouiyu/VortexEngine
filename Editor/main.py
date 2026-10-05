@@ -190,10 +190,11 @@ class EditorApp:
                                       onClose=self._stopPlay)
         startScripts(self.scene, self.projectRoot,
                      gameWindow=self._playWindow, master=self.root)
-        # 脚本异常显示到游戏视图底部（不再静默"动不了"）
+        # 脚本异常显示到游戏视图底部（不再静默"动不了"）；日志也显示到底部信息栏
         try:
             from .core import runtime as _rt
             _rt.setScriptErrorHandler(self._playWindow.showScriptError)
+            _rt.setLogHandler(self._playWindow.showLog)
         except Exception:
             pass
         # 播放即把键盘焦点放到主视口（游戏视图稍后自行聚焦）：
@@ -230,6 +231,7 @@ class EditorApp:
         try:
             from .core import runtime as _rt
             _rt.setScriptErrorHandler(None)
+            _rt.setLogHandler(None)
         except Exception:
             pass
         self.viewport.scene = self.scene

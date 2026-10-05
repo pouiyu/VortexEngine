@@ -36,7 +36,7 @@ from OpenGL.GL import (GL_AMBIENT, GL_AMBIENT_AND_DIFFUSE, GL_BLEND,
                        GL_VERSION,
                        glBegin, glBlendFunc, glClear, glClearColor, glColor3f,
                        glColor4f, glDepthFunc, glDisable, glDisableClientState,
-                       glDrawElements,
+                       glDrawElements, glGetDoublev,
                        glEnable, glEnableClientState, glEnd, glGetFloatv, glGetString,
                        glLightModelfv, glLightfv, glLightf, glLineWidth, glLoadIdentity,
                        glMaterialfv, glMaterialf, glMatrixMode, glMultMatrixf,
@@ -111,11 +111,19 @@ class _PIXELFORMATDESCRIPTOR(ctypes.Structure):
 class GLViewport(tk.Frame):
     """嵌入 tkinter 的 OpenGL 3D 视口。"""
 
+    # 全部视口实例（脚本 setBackgroundColor 等需要遍历）+ 最近渲染的视口（worldToScreen 用）
+    _instances = []
+    lastRendered = None
+
     def __init__(self, master, scene=None, onSelect=None, prefs=None, projectRoot=None,
                  onTransform=None, onGizmoModeChanged=None, **kw):
         self.onScriptUpdate = kw.pop("onScriptUpdate", None)   # 播放模式每帧脚本回调(dt)
         kw.setdefault("background", "#1e1e22")
         super().__init__(master, **kw)
+        self._bgColor = (0.13, 0.14, 0.16, 1.0)   # 渲染清屏色（setBackgroundColor 可改）
+        self._mvM = None      # 最近一帧 modelview 矩阵（worldToScreen 用）
+        self._projM = None    # 最近一帧 projection 矩阵
+        GLViewport._instances.append(self)
         self.scene = scene
         self.onSelect = onSelect          # 拾取选中回调（main 提供）
         self.onTransform = onTransform    # Gizmo 变换回调（live=拖动中 / False=结束）
@@ -363,7 +371,8 @@ class GLViewport(tk.Frame):
             return
         if not self._opengl32.wglMakeCurrent(self._hdc, self._ctx):
             return
-        glClearColor(0.13, 0.14, 0.16, 1.0)
+        r, g, b, a = self._bgColor
+        glClearColor(r, g, b, a)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glEnable(GL_DEPTH_TEST)
         glDepthFunc(GL_LEQUAL)
@@ -376,6 +385,21 @@ class GLViewport(tk.Frame):
             self._drawGizmo()
         self._gdi32.SwapBuffers(self._hdc)
         self.frameCount += 1
+        # 保存最近一帧的视图矩阵（脚本 worldToScreen / screenToWorld 用）
+        try:
+            self._mvM = glGetDoublev(GL_MODELVIEW_MATRIX)
+            self._projM = glGetDoublev(GL_PROJECTION_MATRIX)
+            GLViewport.lastRendered = self
+        except Exception:
+            pass
+
+    def setBackground(self, r, g, b):
+        """设置清屏色（0~1），下一帧渲染生效。"""
+        self._bgColor = (float(r), float(g), float(b), 1.0)
+        try:
+            self.renderFrame()
+        except Exception:
+            pass
 
     def _setupLights(self):
         """把场景中的 Light 组件映射到固定管线光照（GL_LIGHT0..N）。
@@ -1190,6 +1214,13 @@ class GLViewport(tk.Frame):
                 pass
             self._after = None
         self._teardownGL()
+        try:
+            if self in GLViewport._instances:
+                GLViewport._instances.remove(self)
+            if GLViewport.lastRendered is self:
+                GLViewport.lastRendered = None
+        except Exception:
+            pass
 
 
 # ---- 立方体几何数据（Gizmo 方块手柄用） ----
