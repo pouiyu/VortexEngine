@@ -34,6 +34,7 @@ from OpenGL.GL import (GL_AMBIENT, GL_AMBIENT_AND_DIFFUSE, GL_BLEND,
                        GL_QUADS, GL_SHININESS, GL_SPECULAR,
                        GL_SRC_ALPHA, GL_TRIANGLES, GL_UNSIGNED_INT, GL_VERTEX_ARRAY,
                        GL_VERSION,
+                       GL_NORMALIZE,
                        glBegin, glBlendFunc, glClear, glClearColor, glColor3f,
                        glColor4f, glDepthFunc, glDisable, glDisableClientState,
                        glDrawElements, glGetDoublev,
@@ -376,6 +377,10 @@ class GLViewport(tk.Frame):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glEnable(GL_DEPTH_TEST)
         glDepthFunc(GL_LEQUAL)
+        # 固定管线会把法线用模型视图矩阵的逆转置变换，但缩放后长度不再为单位；
+        # 开启 NORMALIZE 让每个变换后的法线自动归一化，避免缩放（尤其缩小/非均匀）
+        # 时某几个面的光照强度爆掉变白。
+        glEnable(GL_NORMALIZE)
         self._setupView()
         if not self.playMode:
             self._drawGrid()
