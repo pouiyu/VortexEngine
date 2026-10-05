@@ -190,6 +190,14 @@ class EditorApp:
                                       onClose=self._stopPlay)
         startScripts(self.scene, self.projectRoot,
                      gameWindow=self._playWindow, master=self.root)
+        # 启动物理世界（pybullet 无头；无 Rigidbody 的物体不受影响）
+        try:
+            from .core.physics import getPhysicsWorld
+            ok = getPhysicsWorld().start(self.scene)
+            if not ok:
+                self.status.showMessage("⚠ 物理引擎未就绪（缺少 pybullet）")
+        except Exception:
+            pass
         # 脚本异常显示到游戏视图底部（不再静默"动不了"）；日志也显示到底部信息栏
         try:
             from .core import runtime as _rt
@@ -229,6 +237,11 @@ class EditorApp:
         self._playSnapshot = None
         self._playing = False
         try:
+            from .core.physics import getPhysicsWorld
+            getPhysicsWorld().stop()
+        except Exception:
+            pass
+        try:
             from .core import runtime as _rt
             _rt.setScriptErrorHandler(None)
             _rt.setLogHandler(None)
@@ -249,10 +262,15 @@ class EditorApp:
         self._updateTitle()
 
     def _onScriptTick(self, dt):
-        """渲染循环每帧回调：播放中执行所有脚本的 update(obj, dt)。"""
+        """渲染循环每帧回调：播放中执行脚本 update + 物理步进。"""
         if self._playing:
             from .core.runtime import updateScripts
             updateScripts(self.scene, self.projectRoot, dt)
+            try:
+                from .core.physics import getPhysicsWorld
+                getPhysicsWorld().step(dt)
+            except Exception:
+                pass
 
     def _onClose(self):
         """退出：有未保存修改时询问是否保存；播放中先停止（关播放窗口）。"""
@@ -784,7 +802,24 @@ def _testDataLayer():
     assert _rt.getMouseWheel() == 120, "滚轮状态错误"
     _rt._beginInputFrame()
     assert not _rt.isMousePressed(1) and _rt.getMouseWheel() == 0, "输入帧刷新错误"
-    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返 / 内置网格 / Script / 输入API")
+    # V5.6：物理组件序列化往返
+    from .core.scene import BoxCollider, Rigidbody, SphereCollider
+    phys = GameObject(name="物理物")
+    phys.addComponent(Rigidbody(mass=2.5, useGravity=False, isKinematic=True))
+    phys.addComponent(BoxCollider(size=[2.0, 3.0, 4.0], offset=[0.1, 0.2, 0.3],
+                                  friction=0.8, restitution=0.6))
+    phys.addComponent(SphereCollider(radius=1.5, restitution=0.9))
+    scene.addObject(phys)
+    d3 = serializeScene(scene)
+    r3 = deserializeScene(d3)
+    rp = r3.findByUuid(phys.uuid)
+    rrb = rp.getComponent(Rigidbody) if rp else None
+    rbx = rp.getComponent(BoxCollider) if rp else None
+    rsph = rp.getComponent(SphereCollider) if rp else None
+    assert rrb is not None and abs(rrb.mass - 2.5) < 1e-6 and rrb.isKinematic, "Rigidbody 未序列化/恢复"
+    assert rbx is not None and rbx.size == [2.0, 3.0, 4.0] and abs(rbx.restitution - 0.6) < 1e-6, "BoxCollider 未恢复"
+    assert rsph is not None and abs(rsph.radius - 1.5) < 1e-6 and abs(rsph.restitution - 0.9) < 1e-6, "SphereCollider 未恢复"
+    print("[自检] 数据层通过：组件 / 父子 / 世界矩阵 / 序列化往返 / 内置网格 / Script / 输入API / 物理组件")
 
 
 def selftest():

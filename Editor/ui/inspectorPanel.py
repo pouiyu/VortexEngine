@@ -13,7 +13,8 @@ from tkinter import ttk
 
 from ..core.materialCache import listProjectMaterials, loadMaterial, saveMaterial
 from ..core.meshCache import listProjectMeshes
-from ..core.scene import Camera, Light, MeshRenderer, Script, Transform
+from ..core.scene import (BoxCollider, Camera, Light, MeshRenderer, Rigidbody,
+                          Script, SphereCollider, Transform)
 from .resourcePicker import ResourcePicker
 
 
@@ -184,6 +185,12 @@ class InspectorPanel(ttk.Frame):
                 self._buildCameraBox(obj, comp)
             elif isinstance(comp, Script):
                 self._buildScriptBox(obj, comp)
+            elif isinstance(comp, Rigidbody):
+                self._buildRigidbodyBox(obj, comp)
+            elif isinstance(comp, BoxCollider):
+                self._buildBoxColliderBox(obj, comp)
+            elif isinstance(comp, SphereCollider):
+                self._buildSphereColliderBox(obj, comp)
         addRow = ttk.Frame(self.proxy)
         addRow.pack(fill=tk.X, padx=6, pady=4)
         ttk.Button(addRow, text="+ 添加组件",
@@ -487,7 +494,193 @@ class InspectorPanel(ttk.Frame):
                 command=lambda: self._addComponent(obj, Script()))
         else:
             menu.add_command(label="脚本（已有）", state=tk.DISABLED)
+        menu.add_separator()
+        # V5.6 物理组件
+        if obj.getComponent(Rigidbody) is None:
+            menu.add_command(
+                label="刚体（Rigidbody）",
+                command=lambda: self._addComponent(obj, Rigidbody(mass=1.0, useGravity=True)))
+        else:
+            menu.add_command(label="刚体（已有）", state=tk.DISABLED)
+        if obj.getComponent(BoxCollider) is None:
+            menu.add_command(
+                label="盒碰撞体（Box）",
+                command=lambda: self._addComponent(obj, BoxCollider(size=[1.0, 1.0, 1.0])))
+        else:
+            menu.add_command(label="盒碰撞体（已有）", state=tk.DISABLED)
+        if obj.getComponent(SphereCollider) is None:
+            menu.add_command(
+                label="球碰撞体（Sphere）",
+                command=lambda: self._addComponent(obj, SphereCollider(radius=0.5)))
+        else:
+            menu.add_command(label="球碰撞体（已有）", state=tk.DISABLED)
         menu.tk_popup(anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height())
+
+    def _buildRigidbodyBox(self, obj, rb):
+        """刚体组件框：质量 / 重力 / 运动学。"""
+        sec = ttk.LabelFrame(self.proxy, text="刚体", padding=6)
+        sec.pack(fill=tk.X, padx=6, pady=4)
+        head = ttk.Frame(sec)
+        head.pack(fill=tk.X)
+        ttk.Button(head, text="移除", width=4,
+                   command=lambda: self._removeComponent(obj, rb)).pack(side=tk.RIGHT)
+
+        def addNum(label, comp, attr, lo=None, hi=None):
+            row = ttk.Frame(sec)
+            row.pack(fill=tk.X, padx=(12, 0), pady=1)
+            ttk.Label(row, text=label, width=6).pack(side=tk.LEFT)
+            var = tk.StringVar(value=str(getattr(comp, attr)))
+            ent = ttk.Entry(row, textvariable=var, width=8)
+            ent.pack(side=tk.LEFT, padx=(4, 0))
+
+            def commit():
+                try:
+                    v = float(var.get())
+                    if lo is not None:
+                        v = max(lo, v)
+                    if hi is not None:
+                        v = min(hi, v)
+                    setattr(comp, attr, v)
+                    if self.onValue:
+                        self.onValue()
+                except ValueError:
+                    var.set(str(getattr(comp, attr)))
+
+            ent.bind("<Return>", lambda e: commit())
+            ent.bind("<FocusOut>", lambda e: commit())
+            ent.bind("<MouseWheel>", lambda e: self._spinFloat(e, var, commit))
+            return var
+
+        def addCheck(label, comp, attr):
+            var = tk.BooleanVar(value=bool(getattr(comp, attr)))
+            ttk.Checkbutton(sec, text=label, variable=var,
+                            command=lambda: (setattr(comp, attr, var.get()),
+                                             self.onValue() if self.onValue else None)
+                            ).pack(anchor=tk.W, padx=(12, 0), pady=1)
+
+        addNum("质量", rb, "mass", lo=0.0)
+        addCheck("受重力", rb, "useGravity")
+        addCheck("运动学（由代码驱动）", rb, "isKinematic")
+        ttk.Label(sec, text="质量=0 为静态（墙/平台）；物理仅作用于根物体",
+                  foreground="#888").pack(anchor=tk.W, padx=(12, 0), pady=(2, 0))
+
+    def _buildBoxColliderBox(self, obj, col):
+        """盒碰撞体组件框：尺寸 / 偏移 / 摩擦 / 弹性。"""
+        sec = ttk.LabelFrame(self.proxy, text="盒碰撞体", padding=6)
+        sec.pack(fill=tk.X, padx=6, pady=4)
+        head = ttk.Frame(sec)
+        head.pack(fill=tk.X)
+        ttk.Button(head, text="移除", width=4,
+                   command=lambda: self._removeComponent(obj, col)).pack(side=tk.RIGHT)
+
+        def addVec(label, attr):
+            row = ttk.Frame(sec)
+            row.pack(fill=tk.X, padx=(12, 0), pady=1)
+            ttk.Label(row, text=label, width=6).pack(side=tk.LEFT)
+            vec = getattr(col, attr)
+            for i, ax in enumerate(("X", "Y", "Z")):
+                var = tk.StringVar(value=str(vec[i]))
+                ttk.Label(row, text=ax, width=2).pack(side=tk.LEFT)
+                ent = ttk.Entry(row, textvariable=var, width=7)
+                ent.pack(side=tk.LEFT, padx=(0, 2))
+
+                def commit(ai=i, vv=var):
+                    try:
+                        cur = list(getattr(col, attr))
+                        cur[ai] = float(vv.get())
+                        setattr(col, attr, cur)
+                        if self.onValue:
+                            self.onValue()
+                    except ValueError:
+                        vv.set(str(getattr(col, attr)[ai]))
+
+                ent.bind("<Return>", lambda e: commit())
+                ent.bind("<FocusOut>", lambda e: commit())
+
+        def addNum(label, attr, lo, hi):
+            row = ttk.Frame(sec)
+            row.pack(fill=tk.X, padx=(12, 0), pady=1)
+            ttk.Label(row, text=label, width=6).pack(side=tk.LEFT)
+            var = tk.StringVar(value=str(getattr(col, attr)))
+            ent = ttk.Entry(row, textvariable=var, width=8)
+            ent.pack(side=tk.LEFT, padx=(4, 0))
+
+            def commit():
+                try:
+                    v = float(var.get())
+                    v = max(lo, min(hi, v))
+                    setattr(col, attr, v)
+                    if self.onValue:
+                        self.onValue()
+                except ValueError:
+                    var.set(str(getattr(col, attr)))
+
+            ent.bind("<Return>", lambda e: commit())
+            ent.bind("<FocusOut>", lambda e: commit())
+
+        addVec("尺寸", "size")
+        addVec("偏移", "offset")
+        addNum("摩擦", "friction", 0.0, 1.0)
+        addNum("弹性", "restitution", 0.0, 1.0)
+
+    def _buildSphereColliderBox(self, obj, col):
+        """球碰撞体组件框：半径 / 偏移 / 摩擦 / 弹性。"""
+        sec = ttk.LabelFrame(self.proxy, text="球碰撞体", padding=6)
+        sec.pack(fill=tk.X, padx=6, pady=4)
+        head = ttk.Frame(sec)
+        head.pack(fill=tk.X)
+        ttk.Button(head, text="移除", width=4,
+                   command=lambda: self._removeComponent(obj, col)).pack(side=tk.RIGHT)
+
+        def addVec(label, attr):
+            row = ttk.Frame(sec)
+            row.pack(fill=tk.X, padx=(12, 0), pady=1)
+            ttk.Label(row, text=label, width=6).pack(side=tk.LEFT)
+            vec = getattr(col, attr)
+            for i, ax in enumerate(("X", "Y", "Z")):
+                var = tk.StringVar(value=str(vec[i]))
+                ttk.Label(row, text=ax, width=2).pack(side=tk.LEFT)
+                ent = ttk.Entry(row, textvariable=var, width=7)
+                ent.pack(side=tk.LEFT, padx=(0, 2))
+
+                def commit(ai=i, vv=var):
+                    try:
+                        cur = list(getattr(col, attr))
+                        cur[ai] = float(vv.get())
+                        setattr(col, attr, cur)
+                        if self.onValue:
+                            self.onValue()
+                    except ValueError:
+                        vv.set(str(getattr(col, attr)[ai]))
+
+                ent.bind("<Return>", lambda e: commit())
+                ent.bind("<FocusOut>", lambda e: commit())
+
+        def addNum(label, attr, lo, hi):
+            row = ttk.Frame(sec)
+            row.pack(fill=tk.X, padx=(12, 0), pady=1)
+            ttk.Label(row, text=label, width=6).pack(side=tk.LEFT)
+            var = tk.StringVar(value=str(getattr(col, attr)))
+            ent = ttk.Entry(row, textvariable=var, width=8)
+            ent.pack(side=tk.LEFT, padx=(4, 0))
+
+            def commit():
+                try:
+                    v = float(var.get())
+                    v = max(lo, min(hi, v))
+                    setattr(col, attr, v)
+                    if self.onValue:
+                        self.onValue()
+                except ValueError:
+                    var.set(str(getattr(col, attr)))
+
+            ent.bind("<Return>", lambda e: commit())
+            ent.bind("<FocusOut>", lambda e: commit())
+
+        addNum("半径", "radius", 0.01, 100.0)
+        addVec("偏移", "offset")
+        addNum("摩擦", "friction", 0.0, 1.0)
+        addNum("弹性", "restitution", 0.0, 1.0)
 
     def _buildScriptBox(self, obj, sc):
         """脚本组件框：移除 + 脚本文件显示 + 选择（项目资源选择器 .vpy）。"""

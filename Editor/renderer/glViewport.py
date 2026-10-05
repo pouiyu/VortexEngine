@@ -528,9 +528,57 @@ class GLViewport(tk.Frame):
                 glLineWidth(2.0)
                 self._drawMoveGizmo(origin, size)
         self._drawCameraFrustum()   # 选中带 Camera 组件的物体 → 画视锥朝向
+        self._drawColliderWire(origin)   # V5.6：选中物体的物理碰撞体线框
         glLineWidth(1.0)
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
+
+    def _drawColliderWire(self, origin):
+        """V5.6：绘制选中物体上的物理碰撞体线框（盒=12 边、球=3 圈）。"""
+        from ..core.scene import BoxCollider, SphereCollider
+        wires = 0
+        glLineWidth(1.5)
+        for comp in (self.selected.components if self.selected else []):
+            m = worldMatrix(self.selected)
+            R = m[:3, :3]
+            eye = m[:3, 3]
+            if isinstance(comp, BoxCollider):
+                wires += 1
+                hw, hh, hd = [v * 0.5 for v in comp.size]
+                off = R @ np.asarray(comp.offset, dtype=float)
+                c = eye + off
+                cx, cy, cz = R @ np.array([1, 0, 0]), R @ np.array([0, 1, 0]), R @ np.array([0, 0, 1])
+                sx, sy, sz = hw, hh, hd
+                pts = []
+                for i, j, k in ((1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1),
+                                (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1)):
+                    pts.append(c + i * sx * cx + j * sy * cy + k * sz * cz)
+                edges = [(0, 1), (2, 3), (4, 5), (6, 7),
+                         (0, 2), (1, 3), (4, 6), (5, 7),
+                         (0, 4), (1, 5), (2, 6), (3, 7)]
+                glColor3f(1.0, 0.85, 0.2)
+                glBegin(GL_LINES)
+                for a, b in edges:
+                    glVertex3f(*pts[a]); glVertex3f(*pts[b])
+                glEnd()
+            elif isinstance(comp, SphereCollider):
+                wires += 1
+                off = R @ np.asarray(comp.offset, dtype=float)
+                c = eye + off
+                r = comp.radius
+                glColor3f(0.3, 0.9, 1.0)
+                for axisVec in (np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1])):
+                    a, b = np.cross(axisVec, np.array([0, 0, 1])), np.cross(axisVec, np.array([0, 1, 0]))
+                    u = a if np.linalg.norm(a) > 0.5 else b
+                    v = np.cross(axisVec, u)
+                    u, v = u / np.linalg.norm(u), v / np.linalg.norm(v)
+                    glBegin(GL_LINE_LOOP)
+                    for t in range(36):
+                        ang = t / 36.0 * 6.2831853
+                        p = c + r * (np.cos(ang) * u + np.sin(ang) * v)
+                        glVertex3f(*p)
+                    glEnd()
+        return wires
 
     def _gizmoSize(self, origin):
         """Gizmo 尺寸：按到相机距离缩放，保证屏幕上近似恒定大小。"""

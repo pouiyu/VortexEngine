@@ -104,6 +104,52 @@ class Script(Component):
         self.script = script
 
 
+class Rigidbody(Component):
+    """刚体组件（V5.6 物理）：使物体参与物理模拟（重力 / 碰撞 / 动量）。
+
+    - mass：质量（0 表示静态：不受重力、不响应力，但可被碰撞阻挡，适合墙/平台）
+    - useGravity：是否受重力（9.8）
+    - isKinematic：运动学（质量会被强制视为 0；由 Transform/脚本驱动位置，可碰撞但不响应）
+    - 物理只作用于没有父物体的根级物体（子物体由父刚体带动）。
+    """
+
+    TYPE = "Rigidbody"
+
+    def __init__(self, mass=1.0, useGravity=True, isKinematic=False):
+        super().__init__()
+        self.mass = float(mass)
+        self.useGravity = bool(useGravity)
+        self.isKinematic = bool(isKinematic)
+
+
+class BoxCollider(Component):
+    """盒碰撞体（V5.6）：以物体局部坐标定义的轴对齐盒，参与物理碰撞。"""
+
+    TYPE = "BoxCollider"
+
+    def __init__(self, size=(1.0, 1.0, 1.0), offset=(0.0, 0.0, 0.0),
+                 friction=0.5, restitution=0.0):
+        super().__init__()
+        self.size = list(size)          # 半尺寸 * 2（宽/高/深）
+        self.offset = list(offset)      # 相对物体原点的偏移
+        self.friction = float(friction)       # 摩擦系数
+        self.restitution = float(restitution) # 弹性（0~1，1=完全弹性）
+
+
+class SphereCollider(Component):
+    """球碰撞体（V5.6）：局部球，参与物理碰撞。"""
+
+    TYPE = "SphereCollider"
+
+    def __init__(self, radius=0.5, offset=(0.0, 0.0, 0.0),
+                 friction=0.5, restitution=0.0):
+        super().__init__()
+        self.radius = float(radius)
+        self.offset = list(offset)
+        self.friction = float(friction)
+        self.restitution = float(restitution)
+
+
 # ---- 物体 ----
 class GameObject:
     """Unity 概念里的 GameObject：Transform + 组件 + 父子层级。"""

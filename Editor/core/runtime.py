@@ -704,6 +704,14 @@ def screenToWorld(sx, sy, depth=0.0):
 
 # ---- V5.5 其他 ----
 
+def _physics():
+    try:
+        from .physics import getPhysicsWorld
+        return getPhysicsWorld()
+    except Exception:
+        return None
+
+
 def isPlaying():
     """当前是否处于播放模式。"""
     return _CTX.get("scene") is not None
@@ -720,6 +728,26 @@ def getSceneName():
 def getVersion():
     """引擎版本号。"""
     return "V5.5"
+
+
+# ---- V5.6 物理（pybullet） ----
+
+def setVelocity(obj, vx, vy, vz):
+    """设置物体刚体速度（单位/秒；需 Rigidbody + 碰撞体组件）。"""
+    w = _physics()
+    return bool(w.setVelocity(obj, vx, vy, vz)) if w is not None else False
+
+
+def getVelocity(obj):
+    """获取物体刚体当前速度 (vx, vy, vz)。"""
+    w = _physics()
+    return w.getVelocity(obj) if w is not None else (0.0, 0.0, 0.0)
+
+
+def applyForce(obj, fx, fy, fz):
+    """给物体刚体施加一次力（牛顿；作用于质心，持续到下一物理步）。"""
+    w = _physics()
+    return bool(w.applyForce(obj, fx, fy, fz)) if w is not None else False
 
 
 # ---- 日志（显示到游戏视图底部信息栏） ----
@@ -1055,6 +1083,10 @@ _API = {
     "getSceneName": getSceneName,
     "getVersion": getVersion,
     "logMessage": logMessage,
+    # V5.6 物理（pybullet）
+    "setVelocity": setVelocity,
+    "getVelocity": getVelocity,
+    "applyForce": applyForce,
     # 鼠标输入
     "getMousePosition": getMousePosition,
     "getMouseDelta": getMouseDelta,
@@ -1161,6 +1193,11 @@ screenToWorld(sx,sy, depth=0)   屏幕→世界（depth 0~1：0=近裁剪面 1=�
 obj.velocity = [vx,vy,vz]         每帧自动积分位移（单位/秒）
 obj.useGravity = True             施加重力（9.8）
 obj.angularVelocity = [x,y,z]     每帧自动积分旋转（度/秒）
+
+【物理】（V5.6，基于 pybullet；需 Rigidbody + 碰撞体组件，播放时生效）
+setVelocity(obj, vx, vy, vz)     设置刚体速度
+getVelocity(obj)                 获取刚体速度 (vx,vy,vz)
+applyForce(obj, fx, fy, fz)      施加一次力（质心）
 
 【调度 / 状态 / 日志】
 invoke(seconds, func, *args)   延迟 seconds 秒后调用 func(*args)

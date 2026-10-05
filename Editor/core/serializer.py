@@ -11,7 +11,8 @@ import uuid
 
 import numpy as np
 
-from .scene import Camera, GameObject, Light, MeshRenderer, Scene, Script, Transform
+from .scene import (BoxCollider, Camera, GameObject, Light, MeshRenderer,
+                    Rigidbody, Scene, Script, SphereCollider, Transform)
 
 SCHEMA = 5
 
@@ -56,6 +57,29 @@ def serializeComponent(comp):
         }
     if isinstance(comp, Script):
         return {"type": "Script", "script": comp.script}
+    if isinstance(comp, Rigidbody):
+        return {
+            "type": "Rigidbody",
+            "mass": float(comp.mass),
+            "useGravity": bool(comp.useGravity),
+            "isKinematic": bool(comp.isKinematic),
+        }
+    if isinstance(comp, BoxCollider):
+        return {
+            "type": "BoxCollider",
+            "size": _numList(comp.size),
+            "offset": _numList(comp.offset),
+            "friction": float(comp.friction),
+            "restitution": float(comp.restitution),
+        }
+    if isinstance(comp, SphereCollider):
+        return {
+            "type": "SphereCollider",
+            "radius": float(comp.radius),
+            "offset": _numList(comp.offset),
+            "friction": float(comp.friction),
+            "restitution": float(comp.restitution),
+        }
     return {"type": "Unknown"}
 
 
@@ -85,6 +109,20 @@ def deserializeComponent(data):
                       far=data.get("far", 1000.0))
     if ctype == "Script":
         return Script(script=data.get("script"))
+    if ctype == "Rigidbody":
+        return Rigidbody(mass=data.get("mass", 1.0),
+                         useGravity=data.get("useGravity", True),
+                         isKinematic=data.get("isKinematic", False))
+    if ctype == "BoxCollider":
+        return BoxCollider(size=_listOrNone(data.get("size")) or [1.0, 1.0, 1.0],
+                           offset=_listOrNone(data.get("offset")) or [0.0, 0.0, 0.0],
+                           friction=data.get("friction", 0.5),
+                           restitution=data.get("restitution", 0.0))
+    if ctype == "SphereCollider":
+        return SphereCollider(radius=data.get("radius", 0.5),
+                              offset=_listOrNone(data.get("offset")) or [0.0, 0.0, 0.0],
+                              friction=data.get("friction", 0.5),
+                              restitution=data.get("restitution", 0.0))
     return None
 
 
