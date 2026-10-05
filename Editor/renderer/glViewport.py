@@ -744,6 +744,7 @@ class GLViewport(tk.Frame):
         rt = self._rec()
         if rt is not None:
             rt.recordMouseDown(2, event.x, event.y)
+        self.focus_set()
         if self.playMode:
             return
         self._flyActive = True
@@ -850,11 +851,11 @@ class GLViewport(tk.Frame):
         rt = self._rec()
         if rt is not None:
             rt.recordMouseDown(1, event.x, event.y)
+        self.focus_set()          # 点击视口即获键盘焦点（播放中也要，保证 WASD 生效）
         if self.playMode:
             return
         self._pressX, self._pressY = event.x, event.y
         self._moved = False
-        self.focus_set()
         # 先检测 Gizmo 命中（选中物体且非 Shift）
         if not (event.state & 0x0001):
             axis = self._pickGizmo(event.x, event.y)
@@ -1104,10 +1105,11 @@ class GLViewport(tk.Frame):
             return None, None
 
     def _onPressRight(self, event):
-        """右键按下：只记录脚本输入（编辑器未用右键功能）。"""
+        """右键按下：记录脚本输入 + 聚焦（编辑器未用右键功能）。"""
         rt = self._rec()
         if rt is not None:
             rt.recordMouseDown(3, event.x, event.y)
+        self.focus_set()
 
     def _onReleaseRight(self, _event):
         rt = self._rec()

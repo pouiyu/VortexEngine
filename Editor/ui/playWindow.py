@@ -27,6 +27,8 @@ class PlayWindow(tk.Toplevel):
         self.viewport.playMode = True
         self.viewport.sceneCameraObj = self._findSceneCamera(scene)
         self.viewport.pack(fill=tk.BOTH, expand=True)
+        # 播放即聚焦游戏视图：按键/WASD 直接生效（否则焦点在其它窗口时输入不采集）
+        self.after(150, lambda: self.viewport.focus_set())
 
         # 场景里没有摄像机物体时给提示（仍用轨道相机兜底视角）
         if self.viewport.sceneCameraObj is None:
