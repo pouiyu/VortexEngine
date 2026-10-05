@@ -41,6 +41,22 @@ _CTX = {
     "windows": _WINDOWS,
 }
 
+# 当前实际渲染相机信息（V5.4.3：主视口=轨道相机，游戏视图=场景相机；每帧由视口发布）
+_CAMERA = {
+    "valid": False,
+    "fwd": [0.0, 0.0, -1.0],    # 相机前向（屏幕深处方向，单位向量）
+    "right": [1.0, 0.0, 0.0],   # 相机右向（单位向量）
+    "eye": [0.0, 3.0, 8.0],     # 相机位置
+}
+
+
+def setCameraInfo(fwd, right, eye):
+    """视口每帧调用：发布当前相机朝向/位置（脚本 getCamera* 读取）。"""
+    _CAMERA["valid"] = True
+    _CAMERA["fwd"] = [float(fwd[0]), float(fwd[1]), float(fwd[2])]
+    _CAMERA["right"] = [float(right[0]), float(right[1]), float(right[2])]
+    _CAMERA["eye"] = [float(eye[0]), float(eye[1]), float(eye[2])]
+
 # 输入状态（V5.4：由编辑器/游戏视图事件回调写入，脚本每帧查询）
 _INPUT = {
     "down": set(),         # 当前按住的键（keysym 小写）
@@ -486,6 +502,23 @@ def getResolution():
 
 # ---- 键盘输入 ----
 
+def getCameraForward():
+    """当前渲染相机的前向（屏幕深处方向）(x, y, z) 单位向量。
+
+    主视口播放用轨道相机、游戏视图用场景相机，二者都反映你实际看到的画面方向。"""
+    return tuple(_CAMERA["fwd"])
+
+
+def getCameraRight():
+    """当前渲染相机的右向 (x, y, z) 单位向量。"""
+    return tuple(_CAMERA["right"])
+
+
+def getCameraPosition():
+    """当前渲染相机的位置 (x, y, z)。"""
+    return tuple(_CAMERA["eye"])
+
+
 def isKeyDown(key):
     """按键当前是否按住（如 "w"、"space"、"up"、"return"）。"""
     return str(key).lower() in _INPUT["down"]
@@ -590,6 +623,10 @@ _API = {
     "isKeyPressed": isKeyPressed,
     "isKeyReleased": isKeyReleased,
     "getKeysDown": getKeysDown,
+    # 相机（当前实际渲染视角，V5.4.3）
+    "getCameraForward": getCameraForward,
+    "getCameraRight": getCameraRight,
+    "getCameraPosition": getCameraPosition,
     # 鼠标输入
     "getMousePosition": getMousePosition,
     "getMouseDelta": getMouseDelta,
@@ -655,6 +692,11 @@ isKeyDown(key)        按键当前是否按住（如 isKeyDown("w")）
 isKeyPressed(key)     本帧刚按下（单击/连点）
 isKeyReleased(key)    本帧刚松开
 getKeysDown()         当前按住的所有键（列表）
+
+【相机】（当前实际渲染视角：游戏视图=场景相机，主视口=轨道相机）
+getCameraForward()    前向单位向量 (x,y,z)——屏幕深处方向
+getCameraRight()      右向单位向量 (x,y,z)
+getCameraPosition()   相机位置 (x,y,z)
 
 【鼠标输入】按钮：1=左，2=中，3=右
 getMousePosition()    鼠标在视口内位置 (x, y)

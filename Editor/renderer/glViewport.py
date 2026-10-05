@@ -333,13 +333,27 @@ class GLViewport(tk.Frame):
             fn = float(np.linalg.norm(fwd))
             fwd = fwd / fn if fn > 1e-9 else np.array([0.0, 0.0, -1.0])
             up = m[:3, :3] @ np.array([0.0, 1.0, 0.0])
+            un = float(np.linalg.norm(up))
+            up = up / un if un > 1e-9 else np.array([0.0, 1.0, 0.0])
+            right = np.cross(fwd, up)
             gluLookAt(eye[0], eye[1], eye[2],
                       eye[0] + fwd[0], eye[1] + fwd[1], eye[2] + fwd[2],
                       up[0], up[1], up[2])
+            self._publishCameraInfo(fwd, right, eye)
         else:
             eye, center, up = self.camera.lookAtArgs()
             gluLookAt(eye[0], eye[1], eye[2], center[0], center[1], center[2],
                       up[0], up[1], up[2])
+            fw, rt, _up = self.camera.axes()
+            self._publishCameraInfo(fw, rt, np.asarray(eye, dtype=float))
+
+    def _publishCameraInfo(self, fwd, right, eye):
+        """把当前实际渲染相机信息发布给脚本运行时（脚本可读 getCameraForward 等）。"""
+        try:
+            from ..core import runtime
+            runtime.setCameraInfo(fwd, right, eye)
+        except Exception:
+            pass
 
     def renderFrame(self):
         """渲染一帧并计数（自检 / 外部事件可直调）。"""
