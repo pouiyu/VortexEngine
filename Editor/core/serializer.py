@@ -40,7 +40,8 @@ def serializeComponent(comp):
             "scale": _numList(comp.scale),
         }
     if isinstance(comp, MeshRenderer):
-        return {"type": "MeshRenderer", "mesh": comp.mesh, "material": comp.material}
+        return {"type": "MeshRenderer", "mesh": comp.mesh, "material": comp.material,
+                "doubleSided": bool(comp.doubleSided)}
     if isinstance(comp, Light):
         return {
             "type": "Light",
@@ -97,7 +98,9 @@ def deserializeComponent(data):
         return t
     if ctype == "MeshRenderer":
         # V3.5：颜色已从组件移除，改由材质资源配置；旧数据 color 忽略
-        return MeshRenderer(mesh=data.get("mesh"), material=data.get("material"))
+        # V5.7：doubleSided 双面渲染
+        return MeshRenderer(mesh=data.get("mesh"), material=data.get("material"),
+                            doubleSided=data.get("doubleSided", False))
     if ctype == "Light":
         color = _listOrNone(data.get("color"))
         return Light(lightType=data.get("lightType") or "directional",

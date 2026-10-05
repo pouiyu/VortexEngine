@@ -58,10 +58,11 @@ class MeshRenderer(Component):
 
     TYPE = "MeshRenderer"
 
-    def __init__(self, mesh=None, material="default"):
+    def __init__(self, mesh=None, material="default", doubleSided=False):
         super().__init__()
         self.mesh = mesh            # "cube" / "sphere" / 资源路径 / None
         self.material = material    # 材质资源键（"default" / 相对路径 / None）
+        self.doubleSided = bool(doubleSided)  # 双面渲染（薄片/传送门环用）
 
 
 class Light(Component):

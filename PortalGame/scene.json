@@ -1,0 +1,1236 @@
+{
+  "schema": 5,
+  "objects": [
+    {
+      "uuid": "24e1ecbb44d949e881addcaaf7184b62",
+      "name": "地板",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            -0.25,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            7.0,
+            0.25,
+            7.0
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/地板.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            14.0,
+            0.5,
+            14.0
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "bbf33cec0b7d41d88580b0b18b32603e",
+      "name": "天花板",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            5.75,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            7.0,
+            0.25,
+            7.0
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            14.0,
+            0.5,
+            14.0
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "25a448bea3884705a2ad97bb600f920c",
+      "name": "后墙",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            2.75,
+            7.25
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            7.0,
+            2.75,
+            0.25
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            14.0,
+            5.5,
+            0.5
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "e000b8fc55ac4cbb9bf2cc4a1f93aac9",
+      "name": "前墙·左",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            -4.1,
+            2.75,
+            -7.25
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            2.9,
+            2.75,
+            0.25
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            5.8,
+            5.5,
+            0.5
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "b8d0729275744a078efd393a898ad933",
+      "name": "前墙·右",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            4.1,
+            2.75,
+            -7.25
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            2.9,
+            2.75,
+            0.25
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            5.8,
+            5.5,
+            0.5
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "9199dbac866741be8655853c2592e364",
+      "name": "前墙·过梁",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            4.25,
+            -7.25
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.2,
+            1.25,
+            0.25
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            2.4,
+            2.5,
+            0.5
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "1feb18d26b87465e8fbe497d5960ab92",
+      "name": "出口门板",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            1.6,
+            -7.25
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.2,
+            1.4,
+            0.175
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/门板.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": true
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            2.4,
+            2.8,
+            0.35
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "56e0b4b4df114061abf4b4e24b588af5",
+      "name": "左墙",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            -7.25,
+            2.75,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.25,
+            2.75,
+            7.0
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.5,
+            5.5,
+            14.0
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "4343f87fa43f480f8333a4572d4b1b19",
+      "name": "右墙",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            7.25,
+            2.75,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.25,
+            2.75,
+            7.0
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.5,
+            5.5,
+            14.0
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "30a69ac0b3ba4fa3ae3e330c61d55c4d",
+      "name": "坑底",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            -0.05,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.8,
+            0.05,
+            0.8
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/坑底.vmat",
+          "doubleSided": false
+        }
+      ]
+    },
+    {
+      "uuid": "214009c641ce4dee9b040c3ac810b0e8",
+      "name": "坑墙·北",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            1.75,
+            -0.95
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.1,
+            1.75,
+            0.15
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            2.2,
+            3.5,
+            0.3
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "39e1b44b7f0546aa8b7db0f8332752d9",
+      "name": "坑墙·南",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            1.75,
+            0.95
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.1,
+            1.75,
+            0.15
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            2.2,
+            3.5,
+            0.3
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "3ad703cc764f4fbdb5df8841e83bfdef",
+      "name": "坑墙·西",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            -0.95,
+            1.75,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.15,
+            1.75,
+            1.1
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.3,
+            3.5,
+            2.2
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "e00d7b299c0542bfb95dc1b74f6c4d0e",
+      "name": "坑墙·东",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.95,
+            1.75,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.15,
+            1.75,
+            1.1
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.3,
+            3.5,
+            2.2
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "f12f7e84264c44e4a3d0503c16e9c63e",
+      "name": "按钮",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            0.15,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.3,
+            0.15,
+            0.3
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/按钮.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.6,
+            0.3,
+            0.6
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        },
+        {
+          "type": "Script",
+          "script": "Scripts/机关门.vpy"
+        }
+      ]
+    },
+    {
+      "uuid": "311ba5c26bf44dfdb235463af0bcb1a5",
+      "name": "方块",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            3.0,
+            0.5,
+            2.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.4,
+            0.4,
+            0.4
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/方块.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 2.0,
+          "useGravity": true,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.6,
+          "restitution": 0.0
+        },
+        {
+          "type": "Script",
+          "script": "Scripts/方块控制器.vpy"
+        }
+      ]
+    },
+    {
+      "uuid": "47e8bc07533a4182a7049e9033d5f07b",
+      "name": "玩家",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            1.75,
+            -3.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 1.0,
+          "useGravity": true,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.9,
+            1.8,
+            0.9
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.4,
+          "restitution": 0.0
+        },
+        {
+          "type": "Camera",
+          "fov": 70.0,
+          "near": 0.1,
+          "far": 200.0
+        },
+        {
+          "type": "Script",
+          "script": "Scripts/玩家控制器.vpy"
+        },
+        {
+          "type": "Script",
+          "script": "Scripts/传送门枪.vpy"
+        }
+      ]
+    },
+    {
+      "uuid": "f7610d86b27b49788bc49b57b38ff9f4",
+      "name": "传送管理器",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "type": "Script",
+          "script": "Scripts/传送逻辑.vpy"
+        }
+      ]
+    },
+    {
+      "uuid": "033476bd8e884f2e8606cfc656d034fa",
+      "name": "出口地板",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            -0.25,
+            -9.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            2.5,
+            0.25,
+            2.5
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/地板.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            5.0,
+            0.5,
+            5.0
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "9b899cb008fe49bca358a6c4861253c9",
+      "name": "出口左墙",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            -2.75,
+            1.5,
+            -9.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.25,
+            1.5,
+            2.5
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.5,
+            3.0,
+            5.0
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "39947cc35812467c8983fa9954971090",
+      "name": "出口右墙",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            2.75,
+            1.5,
+            -9.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.25,
+            1.5,
+            2.5
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            0.5,
+            3.0,
+            5.0
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "5ca82f3d2ca54643a95f88b7458e21bf",
+      "name": "出口后墙",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            1.5,
+            -12.25
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            2.5,
+            1.5,
+            0.25
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/白墙.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            5.0,
+            3.0,
+            0.5
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        }
+      ]
+    },
+    {
+      "uuid": "4f27ef9a860a475e96dd212bcbfce2b5",
+      "name": "出口",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            0.2,
+            -10.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.6,
+            0.1,
+            0.6
+          ]
+        },
+        {
+          "type": "MeshRenderer",
+          "mesh": "cube",
+          "material": "Materials/出口.vmat",
+          "doubleSided": false
+        },
+        {
+          "type": "Rigidbody",
+          "mass": 0.0,
+          "useGravity": false,
+          "isKinematic": false
+        },
+        {
+          "type": "BoxCollider",
+          "size": [
+            1.2,
+            0.2,
+            1.2
+          ],
+          "offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "friction": 0.5,
+          "restitution": 0.0
+        },
+        {
+          "type": "Script",
+          "script": "Scripts/出口判定.vpy"
+        }
+      ]
+    },
+    {
+      "uuid": "a94838d07db14e8ea246870fb5ff8c48",
+      "name": "主光",
+      "active": true,
+      "parent": null,
+      "components": [
+        {
+          "type": "Transform",
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            40.0,
+            -30.0,
+            0.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "type": "Light",
+          "lightType": "directional",
+          "color": [
+            1.0,
+            1.0,
+            0.95
+          ],
+          "intensity": 1.25
+        }
+      ]
+    }
+  ]
+}

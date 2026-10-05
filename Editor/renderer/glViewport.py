@@ -25,7 +25,7 @@ from OpenGL.GL import (GL_AMBIENT, GL_AMBIENT_AND_DIFFUSE, GL_BLEND,
                        GL_COLOR_BUFFER_BIT, GL_CONSTANT_ATTENUATION,
                        GL_DEPTH_BUFFER_BIT, GL_DEPTH_TEST,
                        GL_DIFFUSE, GL_FLOAT, GL_FRONT_AND_BACK, GL_LEQUAL,
-                       GL_LIGHT0, GL_LIGHT_MODEL_AMBIENT,
+                       GL_LIGHT0, GL_LIGHT_MODEL_AMBIENT, GL_LIGHT_MODEL_TWO_SIDE,
                        GL_LIGHTING, GL_LINEAR_ATTENUATION, GL_LINE_LOOP, GL_LINES,
                        GL_MODELVIEW,
                        GL_MODELVIEW_MATRIX,
@@ -41,8 +41,8 @@ from OpenGL.GL import (GL_AMBIENT, GL_AMBIENT_AND_DIFFUSE, GL_BLEND,
                        glEnable, glEnableClientState, glEnd, glGetFloatv, glGetString,
                        glLightModelfv, glLightfv, glLightf, glLineWidth, glLoadIdentity,
                        glMaterialfv, glMaterialf, glMatrixMode, glMultMatrixf,
-                       glNormalPointer,
-                       glPopMatrix, glPushMatrix, glTranslatef, glVertex3f,
+                       glNormalPointer, glOrtho,
+                       glPopMatrix, glPushMatrix, glTranslatef, glVertex2f, glVertex3f,
                        glVertexPointer, glViewport)
 from OpenGL.GLU import gluLookAt, gluPerspective
 
@@ -134,6 +134,7 @@ class GLViewport(tk.Frame):
         self.projectRoot = projectRoot    # 项目根（解析 Resources 下 .obj 用）
         self.playMode = False             # 播放窗口视图：隐藏 Gizmo/网格/交互，用场景相机
         self.sceneCameraObj = None        # 播放视图用的场景相机物体（带 Camera 组件）
+        self._capPrev = None              # V5.7：鼠标捕获上一帧光标位置（屏幕像素）
         self.camera = OrbitCamera()
         self.keyBinds = dict(DEFAULT_KEYS)
         if prefs:
@@ -388,6 +389,7 @@ class GLViewport(tk.Frame):
         self._drawScene()
         if not self.playMode:
             self._drawGizmo()
+        self._drawCrosshair()   # V5.7：播放模式屏幕中心准星（FPS 瞄准）
         self._gdi32.SwapBuffers(self._hdc)
         self.frameCount += 1
         # 保存最近一帧的视图矩阵（脚本 worldToScreen / screenToWorld 用）
@@ -465,6 +467,9 @@ class GLViewport(tk.Frame):
             if data is None:
                 continue
             color = loadMaterial(mr.material, self.projectRoot)   # 颜色由材质资源配置
+            twoSide = bool(getattr(mr, "doubleSided", False))
+            if twoSide:
+                glLightModelfv(GL_LIGHT_MODEL_TWO_SIDE, 1.0)   # 双面渲染（传送门环/薄片）
             glPushMatrix()
             glMultMatrixf(worldMatrix(obj).T.flatten())   # 列优先传给 GL（含父子链）
             glEnableClientState(GL_VERTEX_ARRAY)
@@ -481,6 +486,8 @@ class GLViewport(tk.Frame):
             if obj in self.selectedSet:
                 self._drawOutline(data)
             glPopMatrix()
+            if twoSide:
+                glLightModelfv(GL_LIGHT_MODEL_TWO_SIDE, 0.0)   # 恢复单面
 
     def _drawOutline(self, data):
         """选中物体黄色描边（基于网格实际边，轻微放大避免深度冲突）。"""
@@ -494,6 +501,40 @@ class GLViewport(tk.Frame):
             glVertex3f(b[0] * 1.02, b[1] * 1.02, b[2] * 1.02)
         glEnd()
         glLineWidth(1.0)
+        glEnable(GL_LIGHTING)
+
+    def _drawCrosshair(self):
+        """V5.7：播放模式在视口中心画绿色十字准星（2D 正交叠加，不参与光照/深度）。"""
+        if not self.playMode:
+            return
+        w, h = self.winfo_width(), self.winfo_height()
+        if w <= 0 or h <= 0:
+            return
+        glDisable(GL_LIGHTING)
+        glDisable(GL_DEPTH_TEST)
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        glOrtho(0, w, 0, h, -1.0, 1.0)
+        glMatrixMode(GL_MODELVIEW)
+        glPushMatrix()
+        glLoadIdentity()
+        glColor3f(0.15, 0.95, 0.35)
+        glLineWidth(2.0)
+        cx, cy = w * 0.5, h * 0.5
+        glBegin(GL_LINES)
+        s = 7.0
+        glVertex2f(cx - s, cy); glVertex2f(cx - 2.0, cy)
+        glVertex2f(cx + 2.0, cy); glVertex2f(cx + s, cy)
+        glVertex2f(cx, cy - s); glVertex2f(cx, cy - 2.0)
+        glVertex2f(cx, cy + 2.0); glVertex2f(cx, cy + s)
+        glEnd()
+        glLineWidth(1.0)
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+        glMatrixMode(GL_MODELVIEW)
+        glPopMatrix()
+        glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
 
     # ---- 变换 Gizmo ----
@@ -822,6 +863,7 @@ class GLViewport(tk.Frame):
         dt = min((now - self._lastTick) if self._lastTick else (1.0 / 60.0), 0.1)
         self._lastTick = now
         try:
+            self._applyMouseCapture()   # V5.7：播放模式鼠标捕获（FPS 视角）
             self._applyFlyMove(dt)   # 浏览模式按键移动（dt 平滑，避免帧率抖动）
             if self.onScriptUpdate is not None:
                 self.onScriptUpdate(dt)   # 播放模式：脚本每帧 update（异常已内部捕获）
@@ -829,6 +871,27 @@ class GLViewport(tk.Frame):
         except Exception:
             pass                    # 单帧异常不中断渲染循环
         self._after = self.after(REF, self._tick)
+
+    def _applyMouseCapture(self):
+        """V5.7：播放模式鼠标捕获——隐藏光标、锁定视口中心，把用户真实位移
+        发布为 mouseDelta（净增量，不含回中噪声）。"""
+        try:
+            from ..core import runtime
+            if not self.playMode or not runtime.isMouseCaptured():
+                self._capPrev = None
+                return
+            self._hideCursor(True)
+            cx, cy = self._viewportCenter()
+            x, y = self._cursorPos()
+            if self._capPrev is None:
+                self._capPrev = (x, y)
+            dx, dy = x - self._capPrev[0], y - self._capPrev[1]
+            if dx or dy:
+                runtime._publishMouseDelta(dx, dy)
+            self._warpToCenter()
+            self._capPrev = (cx, cy)
+        except Exception:
+            self._capPrev = None
 
     # ---- 浏览模式（中键）----
     def _onPressMiddle(self, event):
@@ -1211,6 +1274,12 @@ class GLViewport(tk.Frame):
         """鼠标移动：记录位置/位移（脚本 getMousePosition/getMouseDelta 用）。"""
         rt = self._rec()
         if rt is not None:
+            try:
+                from ..core import runtime
+                if self.playMode and runtime.isMouseCaptured():
+                    return   # 捕获模式：位移由 _applyMouseCapture 发布净增量（避免回中噪声）
+            except Exception:
+                pass
             rt.recordMouseMove(event.x, event.y)
 
     def _onWheel(self, event):

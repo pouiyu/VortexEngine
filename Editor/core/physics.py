@@ -237,6 +237,55 @@ class PhysicsWorld:
     def getVelocityOf(self, go):
         return self.getVelocity(go)
 
+    def teleport(self, go, pos, rotDeg=None):
+        """传送物体到世界坐标（有刚体则同步刚体位姿，避免物理回写覆盖）。
+        返回 True（传送成功）。"""
+        if pos is None:
+            return False
+        pos = [float(v) for v in pos]
+        bodyId = self.goToBody.get(getattr(go, "uuid", ""))
+        if bodyId is not None:
+            try:
+                orient = pb.getQuaternionFromEuler(
+                    go.transform.rotation if rotDeg is None else rotDeg,
+                    physicsClientId=self.client)
+                pb.resetBasePositionAndOrientation(
+                    bodyId, pos, orient, physicsClientId=self.client)
+                go.transform.position = np.asarray(pos, dtype=float)
+                if rotDeg is not None:
+                    go.transform.rotation = np.asarray(rotDeg, dtype=float)
+                return True
+            except Exception:
+                return False
+        go.transform.position = np.asarray(pos, dtype=float)
+        if rotDeg is not None:
+            go.transform.rotation = np.asarray(rotDeg, dtype=float)
+        return True
+
+    def collidingWith(self, go, maxN=16):
+        """返回与 go 刚体当前接触的物体列表（去重，最多 maxN 个）。
+        用于落地检测 / 按钮触发 / 机关判定。"""
+        bodyId = self.goToBody.get(getattr(go, "uuid", ""))
+        if bodyId is None:
+            return []
+        try:
+            pts = pb.getContactPoints(bodyId, physicsClientId=self.client)
+        except Exception:
+            return []
+        out = []
+        for p in pts:
+            other = None
+            try:
+                b2 = int(p[2])
+                other = self.bodies.get(b2)
+            except Exception:
+                pass
+            if other is not None and other is not go and other not in out:
+                out.append(other)
+            if len(out) >= maxN:
+                break
+        return out
+
 
 # 全局单例（编辑器播放期间只有一个物理世界）
 _world = PhysicsWorld()

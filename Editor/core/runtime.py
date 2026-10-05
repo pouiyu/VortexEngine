@@ -23,7 +23,8 @@ import numpy as np
 import tkinter as tk
 
 from .scene import (GameObject, MeshRenderer, Script, Camera, Light,
-                    Transform, worldMatrix)
+                    Transform, worldMatrix, Rigidbody, BoxCollider,
+                    SphereCollider)
 
 # 模块缓存：绝对路径 → 模块（False 表示加载失败），避免播放期间反复读盘
 _MOD_CACHE = {}
@@ -41,6 +42,7 @@ _CTX = {
     "master": None,       # 主窗口（openWindow 的父窗口）
     "playStart": 0.0,     # 进入播放的 monotonic 时间
     "windows": _WINDOWS,
+    "mouseCapture": False,  # V5.7：播放模式鼠标捕获（隐藏光标并锁定视口中心）
 }
 
 # 当前实际渲染相机信息（V5.4.3：主视口=轨道相机，游戏视图=场景相机；每帧由视口发布）
@@ -117,6 +119,12 @@ def recordMouseMove(x, y):
     _INPUT["mouseDelta"][0] += int(x) - _INPUT["mouse"][0]
     _INPUT["mouseDelta"][1] += int(y) - _INPUT["mouse"][1]
     _INPUT["mouse"] = [int(x), int(y)]
+
+
+def _publishMouseDelta(dx, dy):
+    """（内部，V5.7 鼠标捕获用）直接累加净位移，不回设位置（光标被锁定中心）。"""
+    _INPUT["mouseDelta"][0] += int(dx)
+    _INPUT["mouseDelta"][1] += int(dy)
 
 
 def recordMouseWheel(delta):
@@ -500,6 +508,9 @@ _COMPONENT_TYPES = {
     "Light": Light,
     "Camera": Camera,
     "Script": Script,
+    "Rigidbody": Rigidbody,
+    "BoxCollider": BoxCollider,
+    "SphereCollider": SphereCollider,
 }
 
 
@@ -523,7 +534,7 @@ def addComponent(obj, name):
         return None
     cls = _COMPONENT_TYPES.get(str(name))
     if cls is None:
-        raise ValueError(f"未知组件类型：{name}（可用 MeshRenderer/Light/Camera/Script）")
+        raise ValueError(f"未知组件类型：{name}（可用 MeshRenderer/Light/Camera/Script/Rigidbody/BoxCollider/SphereCollider）")
     existing = obj.getComponent(cls)
     if existing is not None:
         return existing
@@ -748,6 +759,84 @@ def applyForce(obj, fx, fy, fz):
     """给物体刚体施加一次力（牛顿；作用于质心，持续到下一物理步）。"""
     w = _physics()
     return bool(w.applyForce(obj, fx, fy, fz)) if w is not None else False
+
+
+# ---- V5.7 游戏开发 API（射线 / 传送 / 碰撞 / 鼠标捕获） ----
+
+def raycast(ox, oy, oz, dx, dy, dz, maxDist=1000.0, ignore=None):
+    """从 (ox,oy,oz) 沿方向 (dx,dy,dz) 发射射线，返回最近命中信息。
+
+    返回 dict 或 None：
+      {"obj": 命中物体, "point": [x,y,z], "normal": [nx,ny,nz], "distance": 距离}
+    ignore 可传物体对象排除自身（如玩家）。
+    """
+    scene = _requireScene()
+    from .raycast import raycastScene
+    hit = raycastScene(scene, (ox, oy, oz), (dx, dy, dz), maxDist,
+                       ignore=ignore, projectRoot=_CTX.get("projectRoot"))
+    if hit is None:
+        return None
+    return {
+        "obj": hit["obj"],
+        "point": [float(v) for v in hit["point"]],
+        "normal": [float(v) for v in hit["normal"]],
+        "distance": float(hit["distance"]),
+    }
+
+
+def teleport(obj, x, y, z):
+    """把物体传送到世界坐标 (x,y,z)。
+
+    - 有物理刚体：同步重置刚体位姿（传送后物理不再回写旧位置）
+    - 无刚体：直接设置 Transform 位置
+    传送玩家/方块到传送门对面用这个（Portal 核心机制）。
+    """
+    w = _physics()
+    if w is not None:
+        return bool(w.teleport(obj, (x, y, z)))
+    obj.transform.position = np.asarray([float(x), float(y), float(z)])
+    return True
+
+
+def getCollidingObjects(obj, maxN=16):
+    """返回与物体刚体当前接触（碰撞中）的其他物体列表。
+
+    落地检测：与地板接触；按钮：玩家踩上；机关触发。需物理播放中。
+    """
+    w = _physics()
+    return w.collidingWith(obj, maxN) if w is not None else []
+
+
+def setMouseCapture(capture):
+    """开启/关闭播放视图鼠标捕获：隐藏光标并锁定在视口中心。
+
+    FPS 视角控制前先 setMouseCapture(True)，视角就绪后 False 释放。
+    返回之前的捕获状态。
+    """
+    prev = bool(_CTX.get("mouseCapture"))
+    _CTX["mouseCapture"] = bool(capture)
+    return prev
+
+
+def isMouseCaptured():
+    """播放视图鼠标当前是否处于捕获状态。"""
+    return bool(_CTX.get("mouseCapture"))
+
+
+def setPlayerColliderSize(width, height):
+    """（便捷）把玩家物体的碰撞体调成胶囊近似尺寸：宽 width、总高 height。
+    无碰撞体时自动加 BoxCollider。"""
+    scene = _requireScene()
+    from .scene import BoxCollider
+    go = _CTX.get("obj")
+    if go is None:
+        return False
+    col = go.getComponent(BoxCollider)
+    if col is None:
+        col = go.addComponent(BoxCollider(size=[width, height, width]))
+    else:
+        col.size = [float(width), float(height), float(width)]
+    return True
 
 
 # ---- 日志（显示到游戏视图底部信息栏） ----
@@ -1087,6 +1176,13 @@ _API = {
     "setVelocity": setVelocity,
     "getVelocity": getVelocity,
     "applyForce": applyForce,
+    # V5.7 游戏开发 API
+    "raycast": raycast,
+    "teleport": teleport,
+    "getCollidingObjects": getCollidingObjects,
+    "setMouseCapture": setMouseCapture,
+    "isMouseCaptured": isMouseCaptured,
+    "setPlayerColliderSize": setPlayerColliderSize,
     # 鼠标输入
     "getMousePosition": getMousePosition,
     "getMouseDelta": getMouseDelta,
@@ -1198,6 +1294,16 @@ obj.angularVelocity = [x,y,z]     每帧自动积分旋转（度/秒）
 setVelocity(obj, vx, vy, vz)     设置刚体速度
 getVelocity(obj)                 获取刚体速度 (vx,vy,vz)
 applyForce(obj, fx, fy, fz)      施加一次力（质心）
+
+【游戏开发】（V5.7：射线 / 传送 / 碰撞 / 鼠标捕获）
+raycast(ox,oy,oz, dx,dy,dz, maxDist=1000, ignore=None)
+                                 射线检测：返回 {"obj":物体,"point":[x,y,z],
+                                 "normal":[nx,ny,nz],"distance":距离} 或 None
+teleport(obj, x, y, z)           传送物体到世界坐标（刚体同步位姿）
+getCollidingObjects(obj, maxN=16) 与 obj 当前接触的物体列表（落地/按钮/机关）
+setMouseCapture(True/False)      播放视图鼠标捕获（隐藏光标锁定中心，FPS 用）
+isMouseCaptured()                是否处于鼠标捕获
+setPlayerColliderSize(w, h)      把自身碰撞体调成胶囊近似（宽 w 高 h）
 
 【调度 / 状态 / 日志】
 invoke(seconds, func, *args)   延迟 seconds 秒后调用 func(*args)
