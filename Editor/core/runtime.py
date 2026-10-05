@@ -155,6 +155,16 @@ def _loadModule(rel, projectRoot):
     return mod
 
 
+# 脚本错误回调（V5.4.3：编辑器可把错误显示到游戏视图底部，避免"静默不动"）
+_SCRIPT_ERROR_HANDLER = None
+
+
+def setScriptErrorHandler(fn):
+    """注册脚本错误处理器：脚本 start/update 抛异常时回调 fn(message)。"""
+    global _SCRIPT_ERROR_HANDLER
+    _SCRIPT_ERROR_HANDLER = fn
+
+
 def _call(go, mod, fnName, dt=None):
     """调用脚本的 start/update，兼容新式（无参）与旧式（obj[, dt]）签名。"""
     fn = getattr(mod, fnName, None)
@@ -176,7 +186,13 @@ def _call(go, mod, fnName, dt=None):
             fn(go, dt)                 # 旧式：def update(obj, dt)
     except Exception as e:
         src = getattr(mod, "__file__", "") or "?"
-        print(f"[脚本] {fnName} 错误 {src}: {e}", file=sys.stderr)
+        msg = f"[脚本] {fnName} 错误 {src}: {e}"
+        print(msg, file=sys.stderr)
+        if _SCRIPT_ERROR_HANDLER is not None:
+            try:
+                _SCRIPT_ERROR_HANDLER(msg)
+            except Exception:
+                pass
     finally:
         _CTX["obj"] = None
         _CTX["dt"] = 0.0

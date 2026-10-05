@@ -190,6 +190,19 @@ class EditorApp:
                                       onClose=self._stopPlay)
         startScripts(self.scene, self.projectRoot,
                      gameWindow=self._playWindow, master=self.root)
+        # 脚本异常显示到游戏视图底部（不再静默"动不了"）
+        try:
+            from .core import runtime as _rt
+            _rt.setScriptErrorHandler(self._playWindow.showScriptError)
+        except Exception:
+            pass
+        # 播放即把键盘焦点放到主视口（游戏视图稍后自行聚焦）：
+        # 两个视口任一有焦点，WASD 等按键都会被采集，避免"焦点在面板上按键无效"
+        try:
+            self.viewport.focus_set()
+            self._playWindow.after(150, lambda: self._playWindow.viewport.focus_set())
+        except Exception:
+            pass
         self.status.showMessage("▶ 播放中（F5 或按钮停止，播放修改不会保存）")
         self._updateTitle()
 
@@ -214,6 +227,11 @@ class EditorApp:
         self.scene = deserializeScene(self._playSnapshot) if self._playSnapshot else self.scene
         self._playSnapshot = None
         self._playing = False
+        try:
+            from .core import runtime as _rt
+            _rt.setScriptErrorHandler(None)
+        except Exception:
+            pass
         self.viewport.scene = self.scene
         self.hierarchy.scene = self.scene
         self.inspector.scene = self.scene
